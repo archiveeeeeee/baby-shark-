@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { toast } from "sonner";
 import { BackOfficeLayout } from "@/components/BackOfficeLayout";
 import { SectionTitle } from "@/components/SectionTitle";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -6,16 +7,63 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { useAppData } from "@/context/AppDataContext";
 
 export default function PreRegistrations() {
-  const { state, addPreRegistration, updatePreRegistrationStatus } = useAppData();
+  const { state, addPreRegistration, updatePreRegistrationStatus, storageMode } = useAppData();
+  const [submitting, setSubmitting] = useState(false);
   const [form, setForm] = useState({ childName: "", parentName: "", email: "", phone: "", requestedStartDate: "", requestedRhythm: "", source: "backoffice" as const, notes: "", tags: "" });
+
+  async function handleCreatePreRegistration() {
+    if (!form.childName || !form.parentName || !form.email) {
+      toast.error("Nom enfant, nom parent et email sont obligatoires.");
+      return;
+    }
+
+    if (storageMode !== "supabase") {
+      toast.error("Supabase n'est pas connecté sur cet environnement. Aucune pré-inscription réelle ne sera enregistrée tant que les variables VITE_SUPABASE_URL et VITE_SUPABASE_ANON_KEY ne sont pas configurées en production.");
+      return;
+    }
+
+    setSubmitting(true);
+    try {
+      await addPreRegistration({
+        childName: form.childName,
+        parentName: form.parentName,
+        email: form.email,
+        phone: form.phone,
+        requestedStartDate: form.requestedStartDate,
+        requestedRhythm: form.requestedRhythm,
+        source: form.source,
+        notes: form.notes,
+        tags: form.tags.split(",").map((tag) => tag.trim()).filter(Boolean),
+      });
+
+      setForm({ childName: "", parentName: "", email: "", phone: "", requestedStartDate: "", requestedRhythm: "", source: "backoffice", notes: "", tags: "" });
+      toast.success("Pré-inscription enregistrée dans Supabase.");
+    } catch (error) {
+      console.error("BabyShark pre-registration create failed", error);
+      toast.error("Échec de l'enregistrement Supabase. Vérifie la console et la configuration du projet.");
+    } finally {
+      setSubmitting(false);
+    }
+  }
 
   return (
     <BackOfficeLayout>
       <div className="p-6 max-w-7xl mx-auto space-y-6">
         <SectionTitle title="Pré-inscriptions" subtitle="Capture commerciale structurée depuis le site vitrine et le back-office." />
+
+        {storageMode !== "supabase" && (
+          <Alert className="border-destructive/30 bg-destructive/5 text-destructive">
+            <AlertTitle>Mode local détecté</AlertTitle>
+            <AlertDescription>
+              Cette page n'écrit rien en base tant que Supabase n'est pas configuré sur l'environnement courant. Les cartes affichées ici peuvent être purement locales et ne prouvent aucune création réelle en base.
+            </AlertDescription>
+          </Alert>
+        )}
+
         <div className="grid xl:grid-cols-[0.9fr_1.1fr] gap-6">
           <Card className="rounded-2xl shadow-soft">
             <CardHeader><CardTitle>Nouvelle pré-inscription</CardTitle></CardHeader>
@@ -28,24 +76,9 @@ export default function PreRegistrations() {
               <Input placeholder="Rythme souhaité" value={form.requestedRhythm} onChange={(e) => setForm({ ...form, requestedRhythm: e.target.value })} />
               <Input placeholder="Tags séparés par virgule" value={form.tags} onChange={(e) => setForm({ ...form, tags: e.target.value })} />
               <Textarea placeholder="Notes internes" value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} />
-              <Button
-                className="w-full rounded-xl"
-                onClick={() => {
-                  if (!form.childName || !form.parentName || !form.email) return;
-                  addPreRegistration({
-                    childName: form.childName,
-                    parentName: form.parentName,
-                    email: form.email,
-                    phone: form.phone,
-                    requestedStartDate: form.requestedStartDate,
-                    requestedRhythm: form.requestedRhythm,
-                    source: form.source,
-                    notes: form.notes,
-                    tags: form.tags.split(",").map((tag) => tag.trim()).filter(Boolean),
-                  });
-                  setForm({ childName: "", parentName: "", email: "", phone: "", requestedStartDate: "", requestedRhythm: "", source: "backoffice", notes: "", tags: "" });
-                }}
-              >Créer le dossier</Button>
+              <Button className="w-full rounded-xl" disabled={submitting} onClick={handleCreatePreRegistration}>
+                {submitting ? "Enregistrement..." : "Créer le dossier"}
+              </Button>
             </CardContent>
           </Card>
 
