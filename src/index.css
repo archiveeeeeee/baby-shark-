@@ -1,0 +1,127 @@
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    /* Warm peach/sage childcare palette */
+    --background: 30 40% 98%;
+    --foreground: 220 20% 14%;
+
+    --card: 0 0% 100%;
+    --card-foreground: 220 20% 14%;
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 220 20% 14%;
+
+    /* Warm teal — trust, care, growth */
+    --primary: 168 42% 40%;
+    --primary-foreground: 0 0% 100%;
+
+    --secondary: 30 30% 95%;
+    --secondary-foreground: 220 20% 14%;
+
+    --muted: 30 20% 94%;
+    --muted-foreground: 220 10% 46%;
+
+    --accent: 168 30% 92%;
+    --accent-foreground: 168 42% 28%;
+
+    --destructive: 0 65% 52%;
+    --destructive-foreground: 0 0% 100%;
+
+    --border: 30 16% 90%;
+    --input: 30 16% 90%;
+    --ring: 168 42% 40%;
+
+    --radius: 0.75rem;
+
+    /* Semantic tokens */
+    --success: 152 56% 42%;
+    --success-foreground: 0 0% 100%;
+    --warning: 38 92% 50%;
+    --warning-foreground: 38 92% 14%;
+    --info: 210 72% 52%;
+    --info-foreground: 0 0% 100%;
+
+    /* Childcare accents */
+    --peach: 18 85% 70%;
+    --peach-foreground: 18 60% 25%;
+    --lavender: 260 50% 72%;
+    --lavender-foreground: 260 40% 25%;
+    --sky: 200 80% 68%;
+    --sky-foreground: 200 60% 20%;
+    --mint: 160 50% 65%;
+    --mint-foreground: 160 40% 22%;
+    --coral: 5 70% 65%;
+    --coral-foreground: 5 50% 20%;
+    --sunshine: 42 90% 62%;
+    --sunshine-foreground: 42 70% 18%;
+
+    /* Sidebar */
+    --sidebar-background: 168 35% 16%;
+    --sidebar-foreground: 168 10% 72%;
+    --sidebar-primary: 168 42% 52%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 168 25% 22%;
+    --sidebar-accent-foreground: 0 0% 92%;
+    --sidebar-border: 168 20% 22%;
+    --sidebar-ring: 168 42% 52%;
+
+    /* Elevation */
+    --shadow-sm: 0 1px 3px 0 hsl(220 20% 14% / 0.04);
+    --shadow-md: 0 4px 14px -2px hsl(220 20% 14% / 0.06), 0 2px 6px -2px hsl(220 20% 14% / 0.04);
+    --shadow-lg: 0 12px 36px -4px hsl(220 20% 14% / 0.08), 0 4px 10px -2px hsl(220 20% 14% / 0.04);
+  }
+
+  .dark {
+    --background: 220 18% 10%;
+    --foreground: 40 14% 92%;
+    --card: 220 16% 14%;
+    --card-foreground: 40 14% 92%;
+    --popover: 220 16% 14%;
+    --popover-foreground: 40 14% 92%;
+    --primary: 168 42% 48%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 220 14% 18%;
+    --secondary-foreground: 40 14% 92%;
+    --muted: 220 14% 18%;
+    --muted-foreground: 220 10% 56%;
+    --accent: 168 20% 18%;
+    --accent-foreground: 168 28% 72%;
+    --destructive: 0 62% 42%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 220 14% 22%;
+    --input: 220 14% 22%;
+    --ring: 168 42% 48%;
+    --sidebar-background: 220 20% 8%;
+    --sidebar-foreground: 220 10% 72%;
+    --sidebar-primary: 168 42% 52%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 220 16% 14%;
+    --sidebar-accent-foreground: 0 0% 92%;
+    --sidebar-border: 220 14% 16%;
+    --sidebar-ring: 168 42% 52%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground font-sans antialiased;
+  }
+  h1, h2, h3, h4, h5, h6 {
+    font-family: 'Plus Jakarta Sans', sans-serif;
+    @apply tracking-tight;
+  }
+}
+
+@layer utilities {
+  .font-display {
+    font-family: 'Plus Jakarta Sans', sans-serif;
+  }
+}
