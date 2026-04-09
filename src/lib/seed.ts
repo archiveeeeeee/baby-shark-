@@ -27,7 +27,7 @@ export const seedState: AppState = {
   },
   currentUserId: "usr_admin",
   users: [
-    { id: "usr_super", name: "Amina Soler", email: "superadmin@babyshark.be", role: "superadmin", structureId: "str_demo", title: "Superadmin" },
+    { id: "usr_super", name: "Amina Soler", email: "superadmin@babyshark.be", role: "admin", structureId: "str_demo", title: "Superadmin" },
     { id: "usr_admin", name: "Marie Laurent", email: "marie@babyshark.be", role: "admin", structureId: "str_demo", title: "Directrice" },
     { id: "usr_mgr", name: "Julie Robert", email: "julie@babyshark.be", role: "manager", structureId: "str_demo", title: "Responsable de section", visibleInTeamApp: true },
     { id: "usr_team_1", name: "Sofia Bernard", email: "sofia@babyshark.be", role: "team", structureId: "str_demo", title: "Puéricultrice", visibleInTeamApp: true },
