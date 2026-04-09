@@ -211,7 +211,7 @@ export function useAppData() {
 
 export function useCurrentUser() {
   const { state } = useAppData();
-  return state.users.find((user) => user.id === state.currentUserId) ?? state.users[0];
+  return state.users.find((user) => user.id === state.currentUserId) ?? state.users[0] ?? seedState.users[0];
 }
 
 export function useChildrenWithRelations() {
