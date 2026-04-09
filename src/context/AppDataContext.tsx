@@ -3,7 +3,7 @@ import { seedState } from "@/lib/seed";
 import { loadState, saveState, uid } from "@/lib/utils-data";
 import { AppState, Contract, Device, DocumentRecord, FamilyRequest, Invoice, MessageThread, PreRegistration, Role, Transmission } from "@/types";
 import { currentUserStorageKey } from "@/lib/app-state";
-import { bootstrapRemoteFromSeed, fetchRemoteState, insertContract, insertDevice, insertDocument, insertFamilyRequest, insertInvoice, insertMessageThread, insertPreRegistration, insertTransmission, patchInvoicePayment, patchPreRegistrationStatus } from "@/lib/supabase-data";
+import { bootstrapRemoteFromSeed, fetchRemoteState, insertContract, insertDevice, insertDocument, insertFamilyRequest, insertInvoice, insertMessageThread, insertPreRegistration, insertTransmission, insertParent, insertChild, linkChildParent, patchInvoicePayment, patchPreRegistrationStatus } from "@/lib/supabase-data";
 import { isSupabaseConfigured } from "@/lib/supabase";
 
 interface ContextValue {
@@ -22,6 +22,33 @@ interface ContextValue {
   addDocument: (payload: Omit<DocumentRecord, "id" | "uploadedAt">) => Promise<void>;
   addDevice: (payload: Omit<Device, "id" | "lastSeen">) => Promise<void>;
   addMessageThread: (payload: Omit<MessageThread, "id" | "updatedAt">) => Promise<void>;
+
+  /**
+   * Create a new parent. In local mode it updates the in-memory state only. In
+   * Supabase mode it writes to the `parents` table, then refreshes state from
+   * the backend. The `childIds` array is initialised empty and documents list
+   * empty on creation. The payer flag controls whether this parent will be
+   * considered as the default payer for contracts and invoices.
+   */
+  addParent: (payload: { name: string; email: string; phone: string; payer: boolean }) => Promise<void>;
+
+  /**
+   * Create a new child and optionally link it to one or more parents. In
+   * Supabase mode it writes to the `children` table then creates entries in
+   * `child_parents` for each provided parentId. In local mode it updates the
+   * in-memory state and augments parent.childIds accordingly. The
+   * `authorizedPickup` and `activeContractId` fields are initialised empty.
+   */
+  addChild: (payload: {
+    firstName: string;
+    lastName: string;
+    birthDate: string;
+    groupId: string;
+    medicalNotes: string;
+    allergies: string[];
+    photo?: string;
+    parentIds: string[];
+  }) => Promise<void>;
 }
 
 const AppDataContext = createContext<ContextValue | null>(null);
@@ -194,6 +221,79 @@ export function AppDataProvider({ children }: { children: React.ReactNode }) {
       await insertMessageThread(state.structure.id, payload);
       await refresh();
     },
+
+    /**
+     * Add a new parent. Uses Supabase when configured otherwise updates local state.
+     */
+    async addParent(payload) {
+      if (!isSupabaseConfigured) {
+        setState((s) => ({
+          ...s,
+          parents: [
+            {
+              id: uid("par"),
+              name: payload.name,
+              email: payload.email,
+              phone: payload.phone,
+              payer: payload.payer,
+              childIds: [],
+              documents: [],
+            },
+            ...s.parents,
+          ],
+        }));
+        return;
+      }
+      // Supabase mode
+      await insertParent(state.structure.id, payload);
+      await refresh();
+    },
+
+    /**
+     * Add a new child and optionally link to parents. Uses Supabase when
+     * configured otherwise updates local state.
+     */
+    async addChild(payload) {
+      if (!isSupabaseConfigured) {
+        const newChildId = uid("chl");
+        setState((s) => {
+          // attach child to parents locally
+          const updatedParents = s.parents.map((p) =>
+            payload.parentIds.includes(p.id)
+              ? { ...p, childIds: [...p.childIds, newChildId] }
+              : p,
+          );
+          return {
+            ...s,
+            parents: updatedParents,
+            children: [
+              {
+                id: newChildId,
+                firstName: payload.firstName,
+                lastName: payload.lastName,
+                birthDate: payload.birthDate,
+                groupId: payload.groupId,
+                parentIds: payload.parentIds,
+                authorizedPickup: [],
+                medicalNotes: payload.medicalNotes,
+                allergies: payload.allergies,
+                photo: payload.photo || "",
+                activeContractId: undefined,
+              },
+              ...s.children,
+            ],
+          };
+        });
+        return;
+      }
+      // Supabase mode: insert child then link parents
+      const { parentIds, ...childData } = payload;
+      const inserted = await insertChild(state.structure.id, childData);
+      for (const parentId of parentIds) {
+        await linkChildParent(state.structure.id, inserted.id, parentId);
+      }
+      await refresh();
+    },
   }), [state, loading]);
 
   return <AppDataContext.Provider value={value}>{children}</AppDataContext.Provider>;
@@ -211,7 +311,7 @@ export function useAppData() {
 
 export function useCurrentUser() {
   const { state } = useAppData();
-  return state.users.find((user) => user.id === state.currentUserId) ?? state.users[0] ?? seedState.users[0];
+  return state.users.find((user) => user.id === state.currentUserId) ?? state.users[0];
 }
 
 export function useChildrenWithRelations() {
