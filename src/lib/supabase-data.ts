@@ -266,20 +266,41 @@ export async function bootstrapRemoteFromSeed() {
   }
 
   const userMap = new Map<string, string>();
-  for (const user of seedState.users) {
-    const id = crypto.randomUUID();
-    const { error } = await supabase.from("user_profiles").insert({
-      id,
-      structure_id: structureId,
-      role: user.role,
-      full_name: user.name,
-      email: user.email,
-      title: user.title || null,
-      visible_in_team_app: user.visibleInTeamApp || false,
-    });
-    if (error) throw error;
-    userMap.set(user.id, id);
+for (const user of seedState.users) {
+  const id = crypto.randomUUID();
+
+  console.log("BOOTSTRAP user insert start", {
+    id,
+    structureId,
+    role: user.role,
+    name: user.name,
+    email: user.email,
+    title: user.title || null,
+    visibleInTeamApp: user.visibleInTeamApp || false,
+  });
+
+  const { error } = await supabase.from("user_profiles").insert({
+    id,
+    structure_id: structureId,
+    role: user.role,
+    full_name: user.name,
+    email: user.email,
+    title: user.title || null,
+    visible_in_team_app: user.visibleInTeamApp || false,
+  });
+
+  if (error) {
+    console.error("BOOTSTRAP user insert failed", error);
+    throw error;
   }
+
+  console.log("BOOTSTRAP user insert success", {
+    id,
+    email: user.email,
+  });
+
+  userMap.set(user.id, id);
+}
 
   const parentMap = new Map<string, string>();
   for (const parent of seedState.parents) {
