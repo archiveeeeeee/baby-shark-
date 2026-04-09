@@ -18,32 +18,28 @@ const childPhotoMap: Record<string, string> = {
   Nathan: childNathan,
 };
 
-let cachedTenantId: string | null | undefined;
 
-async function getBootstrapTenantId(): Promise<string | null> {
-  if (!isSupabaseConfigured || !supabase) return null;
-  if (cachedTenantId !== undefined) return cachedTenantId;
-
+async function getBootstrapTenantId(): Promise<string> {
+  if (!supabase) throw new Error("Supabase client unavailable");
   const { data, error } = await supabase
     .from("tenants")
     .select("id")
-    .limit(1)
-    .maybeSingle();
+    .order("created_at", { ascending: true })
+    .limit(1);
 
   if (error) throw error;
-
-  cachedTenantId = data?.id ?? null;
-  return cachedTenantId;
+  const tenantId = data?.[0]?.id;
+  if (!tenantId) {
+    throw new Error("Missing tenant: public.tenants is empty");
+  }
+  return tenantId as string;
 }
 
-function withTenant<T extends Record<string, any>>(payload: T, tenantId: string | null): T & { tenant_id?: string } {
-  return tenantId ? { ...payload, tenant_id: tenantId } : payload;
-}
 
 export async function fetchRemoteState(): Promise<AppState | null> {
   if (!isSupabaseConfigured || !supabase) return null;
 
-  cachedTenantId = undefined;
+  const tenantId = await getBootstrapTenantId();
 
   const [
     structuresRes,
@@ -64,21 +60,21 @@ export async function fetchRemoteState(): Promise<AppState | null> {
     messagesRes,
   ] = await Promise.all([
     supabase.from("structures").select("*").limit(1),
-    supabase.from("groups").select("*").order("sort_order"),
-    supabase.from("user_profiles").select("*"),
-    supabase.from("parents").select("*"),
-    supabase.from("children").select("*"),
+    supabase.from("groups").select("*").eq("tenant_id", tenantId).order("sort_order"),
+    supabase.from("user_profiles").select("*").eq("tenant_id", tenantId),
+    supabase.from("parents").select("*").eq("tenant_id", tenantId),
+    supabase.from("children").select("*").eq("tenant_id", tenantId),
     supabase.from("child_parents").select("*"),
     supabase.from("authorized_pickups").select("*"),
-    supabase.from("preregistrations").select("*").order("created_at", { ascending: false }),
-    supabase.from("contracts").select("*").order("created_at", { ascending: false }),
-    supabase.from("invoices").select("*").order("created_at", { ascending: false }),
-    supabase.from("transmissions").select("*").order("created_at", { ascending: false }),
-    supabase.from("family_requests").select("*").order("created_at", { ascending: false }),
-    supabase.from("documents").select("*").order("created_at", { ascending: false }),
-    supabase.from("devices").select("*").order("created_at", { ascending: false }),
-    supabase.from("team_shifts").select("*").order("created_at", { ascending: false }),
-    supabase.from("message_threads").select("*").order("updated_at", { ascending: false }),
+    supabase.from("preregistrations").select("*").eq("tenant_id", tenantId).order("created_at", { ascending: false }),
+    supabase.from("contracts").select("*").eq("tenant_id", tenantId).order("created_at", { ascending: false }),
+    supabase.from("invoices").select("*").eq("tenant_id", tenantId).order("created_at", { ascending: false }),
+    supabase.from("transmissions").select("*").eq("tenant_id", tenantId).order("created_at", { ascending: false }),
+    supabase.from("family_requests").select("*").eq("tenant_id", tenantId).order("created_at", { ascending: false }),
+    supabase.from("documents").select("*").eq("tenant_id", tenantId).order("created_at", { ascending: false }),
+    supabase.from("devices").select("*").eq("tenant_id", tenantId).order("created_at", { ascending: false }),
+    supabase.from("team_shifts").select("*").eq("tenant_id", tenantId).order("created_at", { ascending: false }),
+    supabase.from("message_threads").select("*").eq("tenant_id", tenantId).order("updated_at", { ascending: false }),
   ]);
 
   const structures = ensureData(structuresRes.data);
@@ -260,7 +256,7 @@ export async function bootstrapRemoteFromSeed() {
   const tenantId = await getBootstrapTenantId();
 
   const structureCheck = await supabase.from("structures").select("id").limit(1);
-  const usersCheck = await supabase.from("user_profiles").select("id").limit(1);
+  const usersCheck = await supabase.from("user_profiles").select("id").eq("tenant_id", tenantId).limit(1);
 
   const hasStructure = (structureCheck.data || []).length > 0;
   const hasUsers = (usersCheck.data || []).length > 0;
@@ -294,7 +290,7 @@ export async function bootstrapRemoteFromSeed() {
   for (const [index, group] of seedState.structure.groups.entries()) {
     const { data, error } = await supabase
       .from("groups")
-      .insert(withTenant({ structure_id: structureId, name: group.name, color_class: group.colorClass, sort_order: index }, tenantId))
+      .insert({ tenant_id: tenantId, structure_id: structureId, name: group.name, color_class: group.colorClass, sort_order: index })
       .select()
       .single();
     if (error) throw error;
@@ -315,15 +311,16 @@ export async function bootstrapRemoteFromSeed() {
       visibleInTeamApp: user.visibleInTeamApp || false,
     });
 
-    const { error } = await supabase.from("user_profiles").insert(withTenant({
+    const { error } = await supabase.from("user_profiles").insert({
       id,
+      tenant_id: tenantId,
       structure_id: structureId,
       role: user.role,
       full_name: user.name,
       email: user.email,
       title: user.title || null,
       visible_in_team_app: user.visibleInTeamApp || false,
-    }, tenantId));
+    });
 
     if (error) {
       console.error("BOOTSTRAP user insert failed", error);
@@ -342,7 +339,7 @@ export async function bootstrapRemoteFromSeed() {
   for (const parent of seedState.parents) {
     const { data, error } = await supabase
       .from("parents")
-      .insert(withTenant({ structure_id: structureId, name: parent.name, email: parent.email, phone: parent.phone, payer: parent.payer }, tenantId))
+      .insert({ tenant_id: tenantId, structure_id: structureId, name: parent.name, email: parent.email, phone: parent.phone, payer: parent.payer })
       .select()
       .single();
     if (error) throw error;
@@ -353,7 +350,8 @@ export async function bootstrapRemoteFromSeed() {
   for (const child of seedState.children) {
     const { data, error } = await supabase
       .from("children")
-      .insert(withTenant({
+      .insert({
+        tenant_id: tenantId,
         structure_id: structureId,
         group_id: groupMap.get(child.groupId) || null,
         first_name: child.firstName,
@@ -362,7 +360,7 @@ export async function bootstrapRemoteFromSeed() {
         medical_notes: child.medicalNotes,
         allergies: child.allergies,
         photo_url: child.photo,
-      }, tenantId))
+      })
       .select()
       .single();
     if (error) throw error;
@@ -384,7 +382,8 @@ export async function bootstrapRemoteFromSeed() {
   for (const contract of seedState.contracts) {
     const { data, error } = await supabase
       .from("contracts")
-      .insert(withTenant({
+      .insert({
+        tenant_id: tenantId,
         structure_id: structureId,
         child_id: childMap.get(contract.childId),
         payer_parent_id: parentMap.get(contract.payerParentId),
@@ -394,7 +393,7 @@ export async function bootstrapRemoteFromSeed() {
         pricing_label: contract.pricingLabel,
         status: contract.status,
         signature_status: contract.signatureStatus,
-      }, tenantId))
+      })
       .select()
       .single();
     if (error) throw error;
@@ -402,7 +401,8 @@ export async function bootstrapRemoteFromSeed() {
   }
 
   for (const preregistration of seedState.preregistrations) {
-    const { error } = await supabase.from("preregistrations").insert(withTenant({
+    const { error } = await supabase.from("preregistrations").insert({
+      tenant_id: tenantId,
       structure_id: structureId,
       child_name: preregistration.childName,
       parent_name: preregistration.parentName,
@@ -414,12 +414,13 @@ export async function bootstrapRemoteFromSeed() {
       status: preregistration.status,
       notes: preregistration.notes,
       tags: preregistration.tags,
-    }, tenantId));
+    });
     if (error) throw error;
   }
 
   for (const invoice of seedState.invoices) {
-    const { error } = await supabase.from("invoices").insert(withTenant({
+    const { error } = await supabase.from("invoices").insert({
+      tenant_id: tenantId,
       structure_id: structureId,
       parent_id: parentMap.get(invoice.parentId),
       contract_id: invoice.contractId ? contractMap.get(invoice.contractId) : null,
@@ -429,12 +430,13 @@ export async function bootstrapRemoteFromSeed() {
       paid_amount: invoice.paidAmount,
       number: invoice.number,
       status: invoice.status,
-    }, tenantId));
+    });
     if (error) throw error;
   }
 
   for (const transmission of seedState.transmissions) {
-    const { error } = await supabase.from("transmissions").insert(withTenant({
+    const { error } = await supabase.from("transmissions").insert({
+      tenant_id: tenantId,
       structure_id: structureId,
       child_id: childMap.get(transmission.childId),
       author_id: userMap.get(transmission.authorId) || null,
@@ -443,12 +445,13 @@ export async function bootstrapRemoteFromSeed() {
       details: transmission.details,
       visibility: transmission.visibility,
       created_at: transmission.createdAt,
-    }, tenantId));
+    });
     if (error) throw error;
   }
 
   for (const request of seedState.requests) {
-    const { error } = await supabase.from("family_requests").insert(withTenant({
+    const { error } = await supabase.from("family_requests").insert({
+      tenant_id: tenantId,
       structure_id: structureId,
       parent_id: parentMap.get(request.parentId),
       child_id: childMap.get(request.childId),
@@ -456,7 +459,7 @@ export async function bootstrapRemoteFromSeed() {
       request_date: request.date,
       details: request.details,
       status: request.status,
-    }, tenantId));
+    });
     if (error) throw error;
   }
 
@@ -469,49 +472,53 @@ export async function bootstrapRemoteFromSeed() {
           : document.linkedTo.type === "contract"
             ? contractMap.get(document.linkedTo.id)
             : structureId;
-    const { error } = await supabase.from("documents").insert(withTenant({
+    const { error } = await supabase.from("documents").insert({
+      tenant_id: tenantId,
       structure_id: structureId,
       title: document.title,
       category: document.category,
       linked_type: document.linkedTo.type,
       linked_id: linkedId,
       created_at: document.uploadedAt,
-    }, tenantId));
+    });
     if (error) throw error;
   }
 
   for (const device of seedState.devices) {
-    const { error } = await supabase.from("devices").insert(withTenant({
+    const { error } = await supabase.from("devices").insert({
+      tenant_id: tenantId,
       structure_id: structureId,
       label: device.label,
       type: device.type,
       enrollment_code: device.code,
       visible_modules: device.visibleModules,
       last_seen: device.lastSeen,
-    }, tenantId));
+    });
     if (error) throw error;
   }
 
   for (const shift of seedState.teamShifts) {
-    const { error } = await supabase.from("team_shifts").insert(withTenant({
+    const { error } = await supabase.from("team_shifts").insert({
+      tenant_id: tenantId,
       structure_id: structureId,
       user_id: userMap.get(shift.userId),
       day_label: shift.day,
       start_time: shift.start,
       end_time: shift.end,
       status: shift.status,
-    }, tenantId));
+    });
     if (error) throw error;
   }
 
   for (const message of seedState.messages) {
-    const { error } = await supabase.from("message_threads").insert(withTenant({
+    const { error } = await supabase.from("message_threads").insert({
+      tenant_id: tenantId,
       structure_id: structureId,
       title: message.title,
       audience: message.audience,
       last_message: message.lastMessage,
       updated_at: message.updatedAt,
-    }, tenantId));
+    });
     if (error) throw error;
   }
 }
@@ -519,7 +526,8 @@ export async function bootstrapRemoteFromSeed() {
 export async function insertPreRegistration(structureId: string, payload: Omit<PreRegistration, "id" | "status">) {
   if (!supabase) return;
   const tenantId = await getBootstrapTenantId();
-  const { error } = await supabase.from("preregistrations").insert(withTenant({
+  const { error } = await supabase.from("preregistrations").insert({
+    tenant_id: tenantId,
     structure_id: structureId,
     child_name: payload.childName,
     parent_name: payload.parentName,
@@ -531,7 +539,7 @@ export async function insertPreRegistration(structureId: string, payload: Omit<P
     status: "new",
     notes: payload.notes,
     tags: payload.tags,
-  }, tenantId));
+  });
   if (error) throw error;
 }
 
@@ -544,7 +552,8 @@ export async function patchPreRegistrationStatus(id: string, status: PreRegistra
 export async function insertContract(structureId: string, payload: Omit<Contract, "id" | "status" | "signatureStatus">) {
   if (!supabase) return;
   const tenantId = await getBootstrapTenantId();
-  const { error } = await supabase.from("contracts").insert(withTenant({
+  const { error } = await supabase.from("contracts").insert({
+    tenant_id: tenantId,
     structure_id: structureId,
     child_id: payload.childId,
     payer_parent_id: payload.payerParentId,
@@ -554,14 +563,15 @@ export async function insertContract(structureId: string, payload: Omit<Contract
     pricing_label: payload.pricingLabel,
     status: "ready_for_signature",
     signature_status: "pending",
-  }, tenantId));
+  });
   if (error) throw error;
 }
 
 export async function insertInvoice(structureId: string, payload: Omit<Invoice, "id" | "status" | "paidAmount" | "number">, nextNumber: string) {
   if (!supabase) return;
   const tenantId = await getBootstrapTenantId();
-  const { error } = await supabase.from("invoices").insert(withTenant({
+  const { error } = await supabase.from("invoices").insert({
+    tenant_id: tenantId,
     structure_id: structureId,
     parent_id: payload.parentId,
     contract_id: payload.contractId || null,
@@ -571,7 +581,7 @@ export async function insertInvoice(structureId: string, payload: Omit<Invoice, 
     paid_amount: 0,
     number: nextNumber,
     status: "proforma",
-  }, tenantId));
+  });
   if (error) throw error;
 }
 
@@ -586,7 +596,8 @@ export async function patchInvoicePayment(invoice: Invoice, delta: number) {
 export async function insertTransmission(structureId: string, payload: Omit<Transmission, "id" | "createdAt">) {
   if (!supabase) return;
   const tenantId = await getBootstrapTenantId();
-  const { error } = await supabase.from("transmissions").insert(withTenant({
+  const { error } = await supabase.from("transmissions").insert({
+    tenant_id: tenantId,
     structure_id: structureId,
     child_id: payload.childId,
     author_id: payload.authorId,
@@ -594,14 +605,15 @@ export async function insertTransmission(structureId: string, payload: Omit<Tran
     title: payload.title,
     details: payload.details,
     visibility: payload.visibility,
-  }, tenantId));
+  });
   if (error) throw error;
 }
 
 export async function insertFamilyRequest(structureId: string, payload: Omit<FamilyRequest, "id" | "status">) {
   if (!supabase) return;
   const tenantId = await getBootstrapTenantId();
-  const { error } = await supabase.from("family_requests").insert(withTenant({
+  const { error } = await supabase.from("family_requests").insert({
+    tenant_id: tenantId,
     structure_id: structureId,
     parent_id: payload.parentId,
     child_id: payload.childId,
@@ -609,47 +621,50 @@ export async function insertFamilyRequest(structureId: string, payload: Omit<Fam
     request_date: payload.date,
     details: payload.details,
     status: "submitted",
-  }, tenantId));
+  });
   if (error) throw error;
 }
 
 export async function insertDocument(structureId: string, payload: Omit<DocumentRecord, "id" | "uploadedAt">) {
   if (!supabase) return;
   const tenantId = await getBootstrapTenantId();
-  const { error } = await supabase.from("documents").insert(withTenant({
+  const { error } = await supabase.from("documents").insert({
+    tenant_id: tenantId,
     structure_id: structureId,
     title: payload.title,
     category: payload.category,
     linked_type: payload.linkedTo.type,
     linked_id: payload.linkedTo.id,
-  }, tenantId));
+  });
   if (error) throw error;
 }
 
 export async function insertDevice(structureId: string, payload: Omit<Device, "id" | "lastSeen">) {
   if (!supabase) return;
   const tenantId = await getBootstrapTenantId();
-  const { error } = await supabase.from("devices").insert(withTenant({
+  const { error } = await supabase.from("devices").insert({
+    tenant_id: tenantId,
     structure_id: structureId,
     label: payload.label,
     type: payload.type,
     enrollment_code: payload.code,
     visible_modules: payload.visibleModules,
     last_seen: new Date().toISOString(),
-  }, tenantId));
+  });
   if (error) throw error;
 }
 
 export async function insertMessageThread(structureId: string, payload: Omit<MessageThread, "id" | "updatedAt">) {
   if (!supabase) return;
   const tenantId = await getBootstrapTenantId();
-  const { error } = await supabase.from("message_threads").insert(withTenant({
+  const { error } = await supabase.from("message_threads").insert({
+    tenant_id: tenantId,
     structure_id: structureId,
     title: payload.title,
     audience: payload.audience,
     last_message: payload.lastMessage,
     updated_at: new Date().toISOString(),
-  }, tenantId));
+  });
   if (error) throw error;
 }
 
