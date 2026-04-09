@@ -232,8 +232,18 @@ export async function fetchRemoteState(): Promise<AppState | null> {
 
 export async function bootstrapRemoteFromSeed() {
   if (!isSupabaseConfigured || !supabase) return;
+
   const structureCheck = await supabase.from("structures").select("id").limit(1);
-  if ((structureCheck.data || []).length > 0) return;
+  const usersCheck = await supabase.from("user_profiles").select("id").limit(1);
+
+  const hasStructure = (structureCheck.data || []).length > 0;
+  const hasUsers = (usersCheck.data || []).length > 0;
+
+  if (hasStructure && hasUsers) return;
+
+  if (hasStructure && !hasUsers) {
+    throw new Error("Partial bootstrap detected: structure exists but user_profiles is empty");
+  }
 
   const { data: structureRow, error: structureError } = await supabase
     .from("structures")
@@ -266,41 +276,41 @@ export async function bootstrapRemoteFromSeed() {
   }
 
   const userMap = new Map<string, string>();
-for (const user of seedState.users) {
-  const id = crypto.randomUUID();
+  for (const user of seedState.users) {
+    const id = crypto.randomUUID();
 
-  console.log("BOOTSTRAP user insert start", {
-    id,
-    structureId,
-    role: user.role,
-    name: user.name,
-    email: user.email,
-    title: user.title || null,
-    visibleInTeamApp: user.visibleInTeamApp || false,
-  });
+    console.log("BOOTSTRAP user insert start", {
+      id,
+      structureId,
+      role: user.role,
+      name: user.name,
+      email: user.email,
+      title: user.title || null,
+      visibleInTeamApp: user.visibleInTeamApp || false,
+    });
 
-  const { error } = await supabase.from("user_profiles").insert({
-    id,
-    structure_id: structureId,
-    role: user.role,
-    full_name: user.name,
-    email: user.email,
-    title: user.title || null,
-    visible_in_team_app: user.visibleInTeamApp || false,
-  });
+    const { error } = await supabase.from("user_profiles").insert({
+      id,
+      structure_id: structureId,
+      role: user.role,
+      full_name: user.name,
+      email: user.email,
+      title: user.title || null,
+      visible_in_team_app: user.visibleInTeamApp || false,
+    });
 
-  if (error) {
-    console.error("BOOTSTRAP user insert failed", error);
-    throw error;
+    if (error) {
+      console.error("BOOTSTRAP user insert failed", error);
+      throw error;
+    }
+
+    console.log("BOOTSTRAP user insert success", {
+      id,
+      email: user.email,
+    });
+
+    userMap.set(user.id, id);
   }
-
-  console.log("BOOTSTRAP user insert success", {
-    id,
-    email: user.email,
-  });
-
-  userMap.set(user.id, id);
-}
 
   const parentMap = new Map<string, string>();
   for (const parent of seedState.parents) {
