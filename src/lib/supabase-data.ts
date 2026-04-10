@@ -150,7 +150,7 @@ export async function fetchRemoteState(): Promise<AppState | null> {
     authorizedPickup: pickups
       .filter((pickup: any) => pickup.child_id === row.id)
       .map((pickup: any) => pickup.full_name),
-    medicalNotes: row.medical_notes || "",
+    medicalNotes: row.health_notes || "",
     allergies: row.allergies || [],
     photo: row.photo_url || childPhotoMap[row.first_name] || childLucas,
     activeContractId: contracts.find(
@@ -354,9 +354,12 @@ export async function bootstrapRemoteFromSeed() {
         first_name: child.firstName,
         last_name: child.lastName,
         birth_date: child.birthDate || null,
-        medical_notes: child.medicalNotes,
+        health_notes: child.medicalNotes,
         allergies: child.allergies,
+        doctor_name: null,
+        doctor_phone: null,
         photo_url: child.photo,
+        metadata: {},
       })
       .select()
       .single();
@@ -768,9 +771,12 @@ export async function insertChild(
       first_name: payload.firstName,
       last_name: payload.lastName,
       birth_date: payload.birthDate || null,
-      medical_notes: payload.medicalNotes,
+      health_notes: payload.medicalNotes,
       allergies: payload.allergies,
+      doctor_name: null,
+      doctor_phone: null,
       photo_url: payload.photo || null,
+      metadata: {},
     })
     .select()
     .single();
