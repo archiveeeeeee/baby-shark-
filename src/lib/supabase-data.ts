@@ -286,7 +286,6 @@ export async function bootstrapRemoteFromSeed() {
     const { data, error } = await supabase
       .from("groups")
       .insert({
-        structure_id: structureId,
         name: group.name,
         color_class: group.colorClass,
         sort_order: index,
@@ -765,7 +764,6 @@ export async function insertChild(
   const { data, error } = await supabase
     .from("children")
     .insert({
-      structure_id: structureId,
       tenant_id: tenantId,
       group_id: payload.groupId || null,
       first_name: payload.firstName,
