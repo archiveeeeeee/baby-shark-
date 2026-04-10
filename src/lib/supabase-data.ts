@@ -139,24 +139,28 @@ export async function fetchRemoteState(): Promise<AppState | null> {
   }));
 
   const children: Child[] = ensureData(childrenRes.data).map((row: any) => ({
-    id: row.id,
-    firstName: row.first_name,
-    lastName: row.last_name,
-    birthDate: row.birth_date || "",
-    groupId: row.group_id || "",
-    parentIds: childParents
-      .filter((link: any) => link.child_id === row.id)
-      .map((link: any) => link.parent_id),
-    authorizedPickup: pickups
-      .filter((pickup: any) => pickup.child_id === row.id)
-      .map((pickup: any) => pickup.full_name),
-    medicalNotes: row.health_notes || "",
-    allergies: row.allergies || [],
-    photo: row.photo_url || childPhotoMap[row.first_name] || childLucas,
-    activeContractId: contracts.find(
-      (contract) => contract.childId === row.id && contract.status !== "ended",
-    )?.id,
-  }));
+  id: row.id,
+  firstName: row.first_name,
+  lastName: row.last_name,
+  birthDate: row.birth_date || "",
+  groupId: row.group_id || "",
+  parentIds: childParents
+    .filter((link: any) => link.child_id === row.id)
+    .map((link: any) => link.parent_id),
+  authorizedPickup: pickups
+    .filter((pickup: any) => pickup.child_id === row.id)
+    .map((pickup: any) => pickup.full_name),
+  medicalNotes: row.health_notes || "",
+  allergies: Array.isArray(row.allergies)
+    ? row.allergies
+    : typeof row.allergies === "string"
+      ? row.allergies.split(",").map((item: string) => item.trim()).filter(Boolean)
+      : [],
+  photo: row.photo_url || childPhotoMap[row.first_name] || childLucas,
+  activeContractId: contracts.find(
+    (contract) => contract.childId === row.id && contract.status !== "ended",
+  )?.id,
+}));
 
   const invoices: Invoice[] = ensureData(invoicesRes.data).map((row: any) => ({
     id: row.id,
