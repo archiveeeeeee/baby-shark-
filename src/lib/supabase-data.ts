@@ -7,7 +7,23 @@ import childNathan from "@/assets/child-nathan.jpg";
 import { emptyState, currentUserStorageKey } from "@/lib/app-state";
 import { seedState } from "@/lib/seed";
 import { supabase, isSupabaseConfigured } from "@/lib/supabase";
-import { AppState, Child, Contract, Device, DocumentRecord, FamilyRequest, Group, Invoice, MessageThread, Parent, PreRegistration, Structure, TeamShift, Transmission, UserAccount } from "@/types";
+import {
+  AppState,
+  Child,
+  Contract,
+  Device,
+  DocumentRecord,
+  FamilyRequest,
+  Group,
+  Invoice,
+  MessageThread,
+  Parent,
+  PreRegistration,
+  Structure,
+  TeamShift,
+  Transmission,
+  UserAccount,
+} from "@/types";
 
 const childPhotoMap: Record<string, string> = {
   Lucas: childLucas,
@@ -64,6 +80,7 @@ export async function fetchRemoteState(): Promise<AppState | null> {
   const documents = ensureData(documentsRes.data);
   const childParents = ensureData(childParentsRes.data);
   const pickups = ensureData(pickupsRes.data);
+
   const groups: Group[] = ensureData(groupsRes.data).map((row: any) => ({
     id: row.id,
     name: row.name,
@@ -97,11 +114,13 @@ export async function fetchRemoteState(): Promise<AppState | null> {
 
   const parents: Parent[] = ensureData(parentsRes.data).map((row: any) => ({
     id: row.id,
-    name: row.name,
+    name: [row.first_name, row.last_name].filter(Boolean).join(" ").trim(),
     email: row.email,
     phone: row.phone || "",
-    payer: row.payer,
-    childIds: childParents.filter((link: any) => link.parent_id === row.id).map((link: any) => link.child_id),
+    payer: Boolean(row.payer_user_id),
+    childIds: childParents
+      .filter((link: any) => link.parent_id === row.id)
+      .map((link: any) => link.child_id),
     documents: documents
       .filter((doc: any) => doc.linked_type === "parent" && doc.linked_id === row.id)
       .map((doc: any) => mapDocument(doc)),
@@ -125,12 +144,18 @@ export async function fetchRemoteState(): Promise<AppState | null> {
     lastName: row.last_name,
     birthDate: row.birth_date || "",
     groupId: row.group_id || "",
-    parentIds: childParents.filter((link: any) => link.child_id === row.id).map((link: any) => link.parent_id),
-    authorizedPickup: pickups.filter((pickup: any) => pickup.child_id === row.id).map((pickup: any) => pickup.full_name),
+    parentIds: childParents
+      .filter((link: any) => link.child_id === row.id)
+      .map((link: any) => link.parent_id),
+    authorizedPickup: pickups
+      .filter((pickup: any) => pickup.child_id === row.id)
+      .map((pickup: any) => pickup.full_name),
     medicalNotes: row.medical_notes || "",
     allergies: row.allergies || [],
     photo: row.photo_url || childPhotoMap[row.first_name] || childLucas,
-    activeContractId: contracts.find((contract) => contract.childId === row.id && contract.status !== "ended")?.id,
+    activeContractId: contracts.find(
+      (contract) => contract.childId === row.id && contract.status !== "ended",
+    )?.id,
   }));
 
   const invoices: Invoice[] = ensureData(invoicesRes.data).map((row: any) => ({
@@ -232,6 +257,7 @@ export async function fetchRemoteState(): Promise<AppState | null> {
 
 export async function bootstrapRemoteFromSeed() {
   if (!isSupabaseConfigured || !supabase) return;
+
   const structureCheck = await supabase.from("structures").select("id").limit(1);
   if ((structureCheck.data || []).length > 0) return;
 
@@ -251,6 +277,7 @@ export async function bootstrapRemoteFromSeed() {
     })
     .select()
     .single();
+
   if (structureError) throw structureError;
   const structureId = structureRow.id as string;
 
@@ -258,9 +285,15 @@ export async function bootstrapRemoteFromSeed() {
   for (const [index, group] of seedState.structure.groups.entries()) {
     const { data, error } = await supabase
       .from("groups")
-      .insert({ structure_id: structureId, name: group.name, color_class: group.colorClass, sort_order: index })
+      .insert({
+        structure_id: structureId,
+        name: group.name,
+        color_class: group.colorClass,
+        sort_order: index,
+      })
       .select()
       .single();
+
     if (error) throw error;
     groupMap.set(group.id, data.id);
   }
@@ -277,17 +310,35 @@ export async function bootstrapRemoteFromSeed() {
       title: user.title || null,
       visible_in_team_app: user.visibleInTeamApp || false,
     });
+
     if (error) throw error;
     userMap.set(user.id, id);
   }
 
+  const tenantId = await getTenantId();
+
   const parentMap = new Map<string, string>();
   for (const parent of seedState.parents) {
+    const parts = parent.name.trim().split(/\s+/);
+    const firstName = parts.shift() || "";
+    const lastName = parts.join(" ");
+
     const { data, error } = await supabase
       .from("parents")
-      .insert({ structure_id: structureId, name: parent.name, email: parent.email, phone: parent.phone, payer: parent.payer })
+      .insert({
+        tenant_id: tenantId,
+        payer_user_id: null,
+        first_name: firstName,
+        last_name: lastName,
+        email: parent.email,
+        phone: parent.phone,
+        portal_status: parent.payer ? "payer" : "invited",
+        address: {},
+        metadata: {},
+      })
       .select()
       .single();
+
     if (error) throw error;
     parentMap.set(parent.id, data.id);
   }
@@ -298,6 +349,7 @@ export async function bootstrapRemoteFromSeed() {
       .from("children")
       .insert({
         structure_id: structureId,
+        tenant_id: tenantId,
         group_id: groupMap.get(child.groupId) || null,
         first_name: child.firstName,
         last_name: child.lastName,
@@ -308,17 +360,26 @@ export async function bootstrapRemoteFromSeed() {
       })
       .select()
       .single();
+
     if (error) throw error;
     childMap.set(child.id, data.id);
+
     for (const parentId of child.parentIds) {
       const mappedParent = parentMap.get(parentId);
       if (mappedParent) {
-        const { error: relationError } = await supabase.from("child_parents").insert({ child_id: data.id, parent_id: mappedParent });
+        const { error: relationError } = await supabase.from("child_parents").insert({
+          child_id: data.id,
+          parent_id: mappedParent,
+          tenant_id: tenantId,
+        });
         if (relationError) throw relationError;
       }
     }
+
     for (const fullName of child.authorizedPickup) {
-      const { error: pickupError } = await supabase.from("authorized_pickups").insert({ child_id: data.id, full_name: fullName });
+      const { error: pickupError } = await supabase
+        .from("authorized_pickups")
+        .insert({ child_id: data.id, full_name: fullName });
       if (pickupError) throw pickupError;
     }
   }
@@ -340,6 +401,7 @@ export async function bootstrapRemoteFromSeed() {
       })
       .select()
       .single();
+
     if (error) throw error;
     contractMap.set(contract.id, data.id);
   }
@@ -412,6 +474,7 @@ export async function bootstrapRemoteFromSeed() {
           : document.linkedTo.type === "contract"
             ? contractMap.get(document.linkedTo.id)
             : structureId;
+
     const { error } = await supabase.from("documents").insert({
       structure_id: structureId,
       title: document.title,
@@ -459,7 +522,10 @@ export async function bootstrapRemoteFromSeed() {
   }
 }
 
-export async function insertPreRegistration(structureId: string, payload: Omit<PreRegistration, "id" | "status">) {
+export async function insertPreRegistration(
+  structureId: string,
+  payload: Omit<PreRegistration, "id" | "status">,
+) {
   if (!supabase) return;
   const { error } = await supabase.from("preregistrations").insert({
     structure_id: structureId,
@@ -483,7 +549,10 @@ export async function patchPreRegistrationStatus(id: string, status: PreRegistra
   if (error) throw error;
 }
 
-export async function insertContract(structureId: string, payload: Omit<Contract, "id" | "status" | "signatureStatus">) {
+export async function insertContract(
+  structureId: string,
+  payload: Omit<Contract, "id" | "status" | "signatureStatus">,
+) {
   if (!supabase) return;
   const { error } = await supabase.from("contracts").insert({
     structure_id: structureId,
@@ -499,7 +568,11 @@ export async function insertContract(structureId: string, payload: Omit<Contract
   if (error) throw error;
 }
 
-export async function insertInvoice(structureId: string, payload: Omit<Invoice, "id" | "status" | "paidAmount" | "number">, nextNumber: string) {
+export async function insertInvoice(
+  structureId: string,
+  payload: Omit<Invoice, "id" | "status" | "paidAmount" | "number">,
+  nextNumber: string,
+) {
   if (!supabase) return;
   const { error } = await supabase.from("invoices").insert({
     structure_id: structureId,
@@ -519,11 +592,17 @@ export async function patchInvoicePayment(invoice: Invoice, delta: number) {
   if (!supabase) return;
   const paidAmount = Math.min(invoice.amount, invoice.paidAmount + delta);
   const status = paidAmount >= invoice.amount ? "paid" : "partial";
-  const { error } = await supabase.from("invoices").update({ paid_amount: paidAmount, status }).eq("id", invoice.id);
+  const { error } = await supabase
+    .from("invoices")
+    .update({ paid_amount: paidAmount, status })
+    .eq("id", invoice.id);
   if (error) throw error;
 }
 
-export async function insertTransmission(structureId: string, payload: Omit<Transmission, "id" | "createdAt">) {
+export async function insertTransmission(
+  structureId: string,
+  payload: Omit<Transmission, "id" | "createdAt">,
+) {
   if (!supabase) return;
   const { error } = await supabase.from("transmissions").insert({
     structure_id: structureId,
@@ -537,7 +616,10 @@ export async function insertTransmission(structureId: string, payload: Omit<Tran
   if (error) throw error;
 }
 
-export async function insertFamilyRequest(structureId: string, payload: Omit<FamilyRequest, "id" | "status">) {
+export async function insertFamilyRequest(
+  structureId: string,
+  payload: Omit<FamilyRequest, "id" | "status">,
+) {
   if (!supabase) return;
   const { error } = await supabase.from("family_requests").insert({
     structure_id: structureId,
@@ -551,7 +633,10 @@ export async function insertFamilyRequest(structureId: string, payload: Omit<Fam
   if (error) throw error;
 }
 
-export async function insertDocument(structureId: string, payload: Omit<DocumentRecord, "id" | "uploadedAt">) {
+export async function insertDocument(
+  structureId: string,
+  payload: Omit<DocumentRecord, "id" | "uploadedAt">,
+) {
   if (!supabase) return;
   const { error } = await supabase.from("documents").insert({
     structure_id: structureId,
@@ -563,7 +648,10 @@ export async function insertDocument(structureId: string, payload: Omit<Document
   if (error) throw error;
 }
 
-export async function insertDevice(structureId: string, payload: Omit<Device, "id" | "lastSeen">) {
+export async function insertDevice(
+  structureId: string,
+  payload: Omit<Device, "id" | "lastSeen">,
+) {
   if (!supabase) return;
   const { error } = await supabase.from("devices").insert({
     structure_id: structureId,
@@ -576,7 +664,10 @@ export async function insertDevice(structureId: string, payload: Omit<Device, "i
   if (error) throw error;
 }
 
-export async function insertMessageThread(structureId: string, payload: Omit<MessageThread, "id" | "updatedAt">) {
+export async function insertMessageThread(
+  structureId: string,
+  payload: Omit<MessageThread, "id" | "updatedAt">,
+) {
   if (!supabase) return;
   const { error } = await supabase.from("message_threads").insert({
     structure_id: structureId,
@@ -609,48 +700,50 @@ function colorClassFromGroupName(name: string) {
   return "bg-sky/20 text-sky-foreground";
 }
 
-// Cache the tenant ID once retrieved to avoid multiple requests.
 let cachedTenantId: string | null = null;
+
 async function getTenantId() {
   if (!supabase) return null;
   if (cachedTenantId) return cachedTenantId;
-  // fetch the first tenant id from public.tenants table
+
   const { data, error } = await supabase.from("tenants").select("id").limit(1).maybeSingle();
   if (error) throw error;
+
   cachedTenantId = data?.id ?? null;
   return cachedTenantId;
 }
 
-/**
- * Insert a new parent into Supabase. Requires the current structure ID and basic
- * parent details. Will automatically attach the tenant_id when available.
- */
 export async function insertParent(
   structureId: string,
   payload: { name: string; email: string; phone: string; payer: boolean },
 ): Promise<any> {
   if (!supabase) return null;
+
   const tenantId = await getTenantId();
+  const parts = payload.name.trim().split(/\s+/);
+  const firstName = parts.shift() || "";
+  const lastName = parts.join(" ");
+
   const { data, error } = await supabase
     .from("parents")
     .insert({
-      structure_id: structureId,
       tenant_id: tenantId,
-      name: payload.name,
+      payer_user_id: null,
+      first_name: firstName,
+      last_name: lastName,
       email: payload.email,
       phone: payload.phone,
-      payer: payload.payer,
+      portal_status: payload.payer ? "payer" : "invited",
+      address: {},
+      metadata: {},
     })
     .select()
     .single();
+
   if (error) throw error;
   return data;
 }
 
-/**
- * Insert a new child into Supabase. Requires the current structure ID and child details.
- * Will automatically attach the tenant_id when available. Returns the inserted row.
- */
 export async function insertChild(
   structureId: string,
   payload: {
@@ -664,6 +757,7 @@ export async function insertChild(
   },
 ): Promise<any> {
   if (!supabase) return null;
+
   const tenantId = await getTenantId();
   const { data, error } = await supabase
     .from("children")
@@ -680,24 +774,24 @@ export async function insertChild(
     })
     .select()
     .single();
+
   if (error) throw error;
   return data;
 }
 
-/**
- * Create a link between an existing child and parent in Supabase. Attaches tenant_id automatically.
- */
 export async function linkChildParent(
   structureId: string,
   childId: string,
   parentId: string,
 ): Promise<void> {
   if (!supabase) return;
+
   const tenantId = await getTenantId();
   const { error } = await supabase.from("child_parents").insert({
     child_id: childId,
     parent_id: parentId,
     tenant_id: tenantId,
   });
+
   if (error) throw error;
 }
