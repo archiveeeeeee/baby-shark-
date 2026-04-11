@@ -132,8 +132,8 @@ export async function fetchRemoteState(): Promise<AppState | null> {
     payerParentId: row.payer_parent_id,
     startDate: row.start_date,
     endDate: row.end_date || undefined,
-    scheduleLabel: row.schedule_label || "",
-    pricingLabel: row.pricing_label || "",
+    scheduleLabel: row.weekly_schedule || "",
+    pricingLabel: row.pricing || "",
     status: row.status,
     signatureStatus: row.signature_status,
   }));
@@ -351,7 +351,6 @@ export async function bootstrapRemoteFromSeed() {
     const { data, error } = await supabase
       .from("children")
       .insert({
-        structure_id: structureId,
         tenant_id: tenantId,
         group_id: groupMap.get(child.groupId) || null,
         first_name: child.firstName,
@@ -395,15 +394,19 @@ export async function bootstrapRemoteFromSeed() {
     const { data, error } = await supabase
       .from("contracts")
       .insert({
-        structure_id: structureId,
+        tenant_id: tenantId,
         child_id: childMap.get(contract.childId),
         payer_parent_id: parentMap.get(contract.payerParentId),
+        contract_number: `CTR-SEED-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        version: 1,
+        status: contract.status,
+        billing_frequency: "monthly",
         start_date: contract.startDate,
         end_date: contract.endDate || null,
-        schedule_label: contract.scheduleLabel,
-        pricing_label: contract.pricingLabel,
-        status: contract.status,
+        weekly_schedule: contract.scheduleLabel,
+        pricing: contract.pricingLabel,
         signature_status: contract.signatureStatus,
+        document_url: null,
       })
       .select()
       .single();
@@ -560,16 +563,22 @@ export async function insertContract(
   payload: Omit<Contract, "id" | "status" | "signatureStatus">,
 ) {
   if (!supabase) return;
+
+  const tenantId = await getTenantId();
   const { error } = await supabase.from("contracts").insert({
-    structure_id: structureId,
+    tenant_id: tenantId,
     child_id: payload.childId,
     payer_parent_id: payload.payerParentId,
+    contract_number: `CTR-${Date.now()}`,
+    version: 1,
+    status: "ready_for_signature",
+    billing_frequency: "monthly",
     start_date: payload.startDate,
     end_date: payload.endDate || null,
-    schedule_label: payload.scheduleLabel,
-    pricing_label: payload.pricingLabel,
-    status: "ready_for_signature",
+    weekly_schedule: payload.scheduleLabel,
+    pricing: payload.pricingLabel,
     signature_status: "pending",
+    document_url: null,
   });
   if (error) throw error;
 }
