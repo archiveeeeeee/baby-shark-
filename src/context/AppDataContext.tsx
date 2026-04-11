@@ -353,7 +353,18 @@ export function useAppData() {
 
 export function useCurrentUser() {
   const { state } = useAppData();
-  return state.users.find((user) => user.id === state.currentUserId) ?? state.users[0];
+
+  return (
+    state.users.find((user) => user.id === state.currentUserId) ??
+    state.users[0] ?? {
+      id: "",
+      name: "",
+      email: "",
+      role: "admin" as Role,
+      structureId: state.structure.id || "",
+      title: "",
+    }
+  );
 }
 
 export function useChildrenWithRelations() {
