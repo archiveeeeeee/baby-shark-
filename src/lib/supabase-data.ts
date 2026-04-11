@@ -132,8 +132,8 @@ export async function fetchRemoteState(): Promise<AppState | null> {
     payerParentId: row.payer_parent_id,
     startDate: row.start_date,
     endDate: row.end_date || undefined,
-    scheduleLabel: row.weekly_schedule || "",
-    pricingLabel: row.pricing || "",
+    scheduleLabel: row.schedule_label || "",
+    pricingLabel: row.pricing_label || "",
     status: row.status,
     signatureStatus: row.signature_status,
   }));
@@ -164,13 +164,16 @@ export async function fetchRemoteState(): Promise<AppState | null> {
 
   const invoices: Invoice[] = ensureData(invoicesRes.data).map((row: any) => ({
     id: row.id,
-    parentId: row.parent_id,
+    parentId: row.payer_parent_id,
     contractId: row.contract_id || undefined,
-    label: row.label,
-    month: row.month || "",
-    amount: Number(row.amount || 0),
-    paidAmount: Number(row.paid_amount || 0),
-    number: row.number || undefined,
+    label: row.metadata?.label || (row.kind === "proforma" ? "Facture pro forma" : "Facture"),
+    month: row.metadata?.source_month || row.issued_on?.slice(0, 7) || "",
+    amount: Number(row.amount_cents || 0) / 100,
+    paidAmount:
+      row.status === "paid"
+        ? Number(row.amount_cents || 0) / 100
+        : Number(row.metadata?.paid_amount || 0),
+    number: row.invoice_number || undefined,
     status: row.status,
   }));
 
@@ -351,6 +354,7 @@ export async function bootstrapRemoteFromSeed() {
     const { data, error } = await supabase
       .from("children")
       .insert({
+        structure_id: structureId,
         tenant_id: tenantId,
         group_id: groupMap.get(child.groupId) || null,
         first_name: child.firstName,
@@ -394,19 +398,15 @@ export async function bootstrapRemoteFromSeed() {
     const { data, error } = await supabase
       .from("contracts")
       .insert({
-        tenant_id: tenantId,
+        structure_id: structureId,
         child_id: childMap.get(contract.childId),
         payer_parent_id: parentMap.get(contract.payerParentId),
-        contract_number: `CTR-SEED-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-        version: 1,
-        status: contract.status,
-        billing_frequency: "monthly",
         start_date: contract.startDate,
         end_date: contract.endDate || null,
-        weekly_schedule: contract.scheduleLabel,
-        pricing: contract.pricingLabel,
+        schedule_label: contract.scheduleLabel,
+        pricing_label: contract.pricingLabel,
+        status: contract.status,
         signature_status: contract.signatureStatus,
-        document_url: null,
       })
       .select()
       .single();
@@ -434,15 +434,26 @@ export async function bootstrapRemoteFromSeed() {
 
   for (const invoice of seedState.invoices) {
     const { error } = await supabase.from("invoices").insert({
-      structure_id: structureId,
-      parent_id: parentMap.get(invoice.parentId),
+      tenant_id: tenantId,
       contract_id: invoice.contractId ? contractMap.get(invoice.contractId) : null,
-      label: invoice.label,
-      month: invoice.month,
-      amount: invoice.amount,
-      paid_amount: invoice.paidAmount,
-      number: invoice.number,
+      payer_parent_id: parentMap.get(invoice.parentId),
+      invoice_number: invoice.number || `BS-2026-${String(Date.now()).slice(-6)}`,
+      kind: invoice.status === "proforma" ? "proforma" : "invoice",
       status: invoice.status,
+      currency: "EUR",
+      amount_cents: Math.round(Number(invoice.amount || 0) * 100),
+      due_date: null,
+      issued_on: invoice.month ? `${invoice.month}-01` : new Date().toISOString().slice(0, 10),
+      locked_at:
+        invoice.status === "final" || invoice.status === "paid"
+          ? new Date().toISOString()
+          : null,
+      pdf_url: null,
+      metadata: {
+        label: invoice.label,
+        source_month: invoice.month,
+        paid_amount: invoice.paidAmount,
+      },
     });
     if (error) throw error;
   }
@@ -563,22 +574,16 @@ export async function insertContract(
   payload: Omit<Contract, "id" | "status" | "signatureStatus">,
 ) {
   if (!supabase) return;
-
-  const tenantId = await getTenantId();
   const { error } = await supabase.from("contracts").insert({
-    tenant_id: tenantId,
+    structure_id: structureId,
     child_id: payload.childId,
     payer_parent_id: payload.payerParentId,
-    contract_number: `CTR-${Date.now()}`,
-    version: 1,
-    status: "ready_for_signature",
-    billing_frequency: "monthly",
     start_date: payload.startDate,
     end_date: payload.endDate || null,
-    weekly_schedule: payload.scheduleLabel,
-    pricing: payload.pricingLabel,
+    schedule_label: payload.scheduleLabel,
+    pricing_label: payload.pricingLabel,
+    status: "ready_for_signature",
     signature_status: "pending",
-    document_url: null,
   });
   if (error) throw error;
 }
@@ -589,16 +594,27 @@ export async function insertInvoice(
   nextNumber: string,
 ) {
   if (!supabase) return;
+
+  const tenantId = await getTenantId();
+  const amountCents = Math.round(Number(payload.amount || 0) * 100);
+
   const { error } = await supabase.from("invoices").insert({
-    structure_id: structureId,
-    parent_id: payload.parentId,
+    tenant_id: tenantId,
     contract_id: payload.contractId || null,
-    label: payload.label,
-    month: payload.month,
-    amount: payload.amount,
-    paid_amount: 0,
-    number: nextNumber,
-    status: "proforma",
+    payer_parent_id: payload.parentId,
+    invoice_number: nextNumber,
+    kind: "proforma",
+    status: "draft",
+    currency: "EUR",
+    amount_cents: amountCents,
+    due_date: null,
+    issued_on: payload.month ? `${payload.month}-01` : new Date().toISOString().slice(0, 10),
+    locked_at: null,
+    pdf_url: null,
+    metadata: {
+      label: payload.label,
+      source_month: payload.month,
+    },
   });
   if (error) throw error;
 }
@@ -609,7 +625,7 @@ export async function patchInvoicePayment(invoice: Invoice, delta: number) {
   const status = paidAmount >= invoice.amount ? "paid" : "partial";
   const { error } = await supabase
     .from("invoices")
-    .update({ paid_amount: paidAmount, status })
+    .update({ status, metadata: { paid_amount: paidAmount } })
     .eq("id", invoice.id);
   if (error) throw error;
 }
