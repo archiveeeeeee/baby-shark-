@@ -106,6 +106,7 @@ export default function TeamDirectory() {
         if (!tenantId) throw new Error("tenant_id introuvable.");
 
         const { error } = await supabase.from("user_profiles").insert({
+          id: crypto.randomUUID(),
           structure_id: state.structure.id,
           tenant_id: tenantId,
           full_name: fullName,
