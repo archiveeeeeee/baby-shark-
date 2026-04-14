@@ -179,8 +179,8 @@ export default function PlanningChildren() {
           tenant_id: tenantId,
           child_id: childId,
           date,
-          start_time: status === "planned" ? startTime : null,
-          end_time: status === "planned" ? endTime : null,
+          start_time: startTime,
+          end_time: endTime,
           status,
           notes: notes || null,
         })),
@@ -546,9 +546,6 @@ export default function PlanningChildren() {
                             onChange={(e) =>
                               void updateRow(row.id, {
                                 status: e.target.value as ScheduleStatus,
-                                start_time:
-                                  e.target.value === "planned" ? row.start_time : null,
-                                end_time: e.target.value === "planned" ? row.end_time : null,
                               })
                             }
                           >
