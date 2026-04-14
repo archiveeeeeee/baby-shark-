@@ -4,17 +4,8 @@ import { SectionTitle } from "@/components/SectionTitle";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { Textarea } from "@/components/ui/textarea";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
-import { ChevronLeft, ChevronRight, Pencil, Trash2 } from "lucide-react";
+import { Textarea } from "@/components/ui/textarea";
 import { useChildrenWithRelations } from "@/context/AppDataContext";
 import { supabase, isSupabaseConfigured } from "@/lib/supabase";
 
@@ -22,70 +13,56 @@ type ScheduleStatus = "planned" | "absent" | "cancelled";
 
 type ChildScheduleRow = {
   id: string;
-  tenant_id: string;
   child_id: string;
   date: string;
-  start_time: string;
-  end_time: string;
+  start_time: string | null;
+  end_time: string | null;
   status: ScheduleStatus;
   notes: string | null;
-  created_at?: string;
-  updated_at?: string;
+  tenant_id?: string | null;
 };
 
-type FormState = {
-  childId: string;
-  date: string;
-  startTime: string;
-  endTime: string;
-  status: ScheduleStatus;
-  notes: string;
-};
+const weekDays = [
+  { key: 1, label: "Lundi" },
+  { key: 2, label: "Mardi" },
+  { key: 3, label: "Mercredi" },
+  { key: 4, label: "Jeudi" },
+  { key: 5, label: "Vendredi" },
+];
 
-const DAYS = ["Lundi", "Mardi", "Mercredi", "Jeudi", "Vendredi"] as const;
-const STATUS_LABEL: Record<ScheduleStatus, string> = {
-  planned: "Planifié",
-  absent: "Absent",
-  cancelled: "Annulé",
-};
-
-const emptyForm: FormState = {
-  childId: "",
-  date: "",
-  startTime: "08:00",
-  endTime: "17:00",
-  status: "planned",
-  notes: "",
-};
-
-function toInputDate(date: Date) {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
+function toISODate(date: Date) {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, "0");
+  const d = String(date.getDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
 }
 
-function startOfWeek(date = new Date()) {
-  const next = new Date(date);
-  const day = next.getDay();
+function startOfWeek(input: Date) {
+  const date = new Date(input);
+  const day = date.getDay();
   const diff = day === 0 ? -6 : 1 - day;
-  next.setDate(next.getDate() + diff);
-  next.setHours(0, 0, 0, 0);
-  return next;
+  date.setDate(date.getDate() + diff);
+  date.setHours(0, 0, 0, 0);
+  return date;
 }
 
-function addDays(date: Date, amount: number) {
-  const next = new Date(date);
-  next.setDate(next.getDate() + amount);
-  return next;
+function addDays(input: Date, days: number) {
+  const date = new Date(input);
+  date.setDate(date.getDate() + days);
+  return date;
 }
 
-function formatHeaderDate(date: Date) {
-  return new Intl.DateTimeFormat("fr-BE", {
+function formatShortDate(input: Date) {
+  return input.toLocaleDateString("fr-BE", {
     day: "2-digit",
     month: "2-digit",
-    year: "numeric",
-  }).format(date);
+  });
+}
+
+function statusBadgeClass(status: ScheduleStatus) {
+  if (status === "absent") return "bg-amber-100 text-amber-700";
+  if (status === "cancelled") return "bg-rose-100 text-rose-700";
+  return "bg-emerald-100 text-emerald-700";
 }
 
 async function getTenantId() {
@@ -97,171 +74,180 @@ async function getTenantId() {
 
 export default function PlanningChildren() {
   const children = useChildrenWithRelations();
-  const [weekStart, setWeekStart] = useState<Date>(() => startOfWeek(new Date()));
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string>("");
-  const [schedules, setSchedules] = useState<ChildScheduleRow[]>([]);
-  const [editingId, setEditingId] = useState<string | null>(null);
-  const [form, setForm] = useState<FormState>(emptyForm);
 
-  const weekDays = useMemo(
-    () => DAYS.map((label, index) => ({ label, date: addDays(weekStart, index) })),
-    [weekStart],
-  );
+  const [weekStart, setWeekStart] = useState(() => startOfWeek(new Date()));
+  const [rows, setRows] = useState<ChildScheduleRow[]>([]);
+  const [loading, setLoading] = useState<boolean>(isSupabaseConfigured);
+  const [saving, setSaving] = useState(false);
+  const [errorMessage, setErrorMessage] = useState("");
 
-  async function loadSchedules() {
-    if (!isSupabaseConfigured || !supabase) {
-      setSchedules([]);
+  const [mode, setMode] = useState<"day" | "week">("day");
+  const [selectedGroupId, setSelectedGroupId] = useState("all");
+  const [selectedChildIds, setSelectedChildIds] = useState<string[]>([]);
+  const [selectedDate, setSelectedDate] = useState(() => toISODate(startOfWeek(new Date())));
+  const [selectedWeekDays, setSelectedWeekDays] = useState<number[]>([1, 2, 3, 4, 5]);
+  const [startTime, setStartTime] = useState("08:00");
+  const [endTime, setEndTime] = useState("17:00");
+  const [status, setStatus] = useState<ScheduleStatus>("planned");
+  const [notes, setNotes] = useState("");
+
+  const filteredChildren = useMemo(() => {
+    if (selectedGroupId === "all") return children;
+    return children.filter((child) => child.group?.id === selectedGroupId);
+  }, [children, selectedGroupId]);
+
+  const groupedByDay = useMemo(() => {
+    const map = new Map<string, ChildScheduleRow[]>();
+    for (const day of weekDays) {
+      const dayDate = toISODate(addDays(weekStart, day.key - 1));
+      map.set(dayDate, rows.filter((row) => row.date === dayDate));
+    }
+    return map;
+  }, [rows, weekStart]);
+
+  useEffect(() => {
+    if (!filteredChildren.length) {
+      setSelectedChildIds([]);
       return;
     }
 
-    setLoading(true);
-    setError("");
-    try {
-      const tenantId = await getTenantId();
-      const from = toInputDate(weekStart);
-      const to = toInputDate(addDays(weekStart, 4));
-
-      let query = supabase
-        .from("child_schedules")
-        .select("*")
-        .gte("date", from)
-        .lte("date", to)
-        .order("date", { ascending: true })
-        .order("start_time", { ascending: true });
-
-      if (tenantId) {
-        query = query.eq("tenant_id", tenantId);
-      }
-
-      const { data, error: queryError } = await query;
-      if (queryError) throw queryError;
-      setSchedules((data as ChildScheduleRow[]) ?? []);
-    } catch (err: any) {
-      setError(err?.message || "Impossible de charger le planning enfants.");
-      setSchedules([]);
-    } finally {
-      setLoading(false);
-    }
-  }
+    setSelectedChildIds((current) =>
+      current.filter((id) => filteredChildren.some((child) => child.id === id)),
+    );
+  }, [filteredChildren]);
 
   useEffect(() => {
     void loadSchedules();
   }, [weekStart]);
 
-  useEffect(() => {
-    if (!form.childId && children.length > 0) {
-      setForm((current) => ({
-        ...current,
-        childId: children[0].id,
-        date: current.date || toInputDate(weekStart),
-      }));
-    }
-  }, [children, weekStart, form.childId]);
-
-  function resetForm() {
-    setEditingId(null);
-    setForm({
-      ...emptyForm,
-      childId: children[0]?.id || "",
-      date: toInputDate(weekStart),
-    });
-    setError("");
-  }
-
-  async function handleSubmit() {
-    if (!supabase) return;
-    if (!form.childId || !form.date || !form.startTime || !form.endTime) {
-      setError("Tous les champs planning sont obligatoires.");
+  async function loadSchedules() {
+    if (!isSupabaseConfigured || !supabase) {
+      setRows([]);
+      setLoading(false);
       return;
     }
 
     setLoading(true);
-    setError("");
+    setErrorMessage("");
+    try {
+      const start = toISODate(weekStart);
+      const end = toISODate(addDays(weekStart, 4));
+
+      const { data, error } = await supabase
+        .from("child_schedules")
+        .select("*")
+        .gte("date", start)
+        .lte("date", end)
+        .order("date")
+        .order("start_time");
+
+      if (error) throw error;
+      setRows((data ?? []) as ChildScheduleRow[]);
+    } catch (error: any) {
+      console.error("Planning children load failed", error);
+      setErrorMessage(error?.message || "Chargement du planning impossible.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function applyBulkPlan() {
+    if (!supabase || !isSupabaseConfigured) return;
+    if (!selectedChildIds.length) {
+      setErrorMessage("Sélectionne au moins un enfant.");
+      return;
+    }
+    if (!startTime || !endTime) {
+      setErrorMessage("Renseigne une heure de début et de fin.");
+      return;
+    }
+
+    setSaving(true);
+    setErrorMessage("");
+
     try {
       const tenantId = await getTenantId();
-      if (!tenantId) throw new Error("tenant_id introuvable pour le planning enfants.");
+      if (!tenantId) throw new Error("tenant_id introuvable.");
 
-      const payload = {
-        tenant_id: tenantId,
-        child_id: form.childId,
-        date: form.date,
-        start_time: form.startTime,
-        end_time: form.endTime,
-        status: form.status,
-        notes: form.notes || null,
-      };
+      const dates =
+        mode === "day"
+          ? [selectedDate]
+          : selectedWeekDays.map((dayKey) => toISODate(addDays(weekStart, dayKey - 1)));
 
-      if (editingId) {
-        const { error: updateError } = await supabase
-          .from("child_schedules")
-          .update(payload)
-          .eq("id", editingId);
-        if (updateError) throw updateError;
-      } else {
-        const { error: insertError } = await supabase.from("child_schedules").insert(payload);
-        if (insertError) throw insertError;
-      }
+      const payload = selectedChildIds.flatMap((childId) =>
+        dates.map((date) => ({
+          tenant_id: tenantId,
+          child_id: childId,
+          date,
+          start_time: status === "planned" ? startTime : null,
+          end_time: status === "planned" ? endTime : null,
+          status,
+          notes: notes || null,
+        })),
+      );
+
+      const { error } = await supabase
+        .from("child_schedules")
+        .upsert(payload, { onConflict: "tenant_id,child_id,date" });
+
+      if (error) throw error;
 
       await loadSchedules();
-      resetForm();
-    } catch (err: any) {
-      setError(err?.message || "Impossible d'enregistrer le planning.");
+    } catch (error: any) {
+      console.error("Bulk schedule failed", error);
+      setErrorMessage(error?.message || "Impossible de planifier la sélection.");
     } finally {
-      setLoading(false);
+      setSaving(false);
     }
   }
 
-  function startEdit(row: ChildScheduleRow) {
-    setEditingId(row.id);
-    setForm({
-      childId: row.child_id,
-      date: row.date,
-      startTime: row.start_time,
-      endTime: row.end_time,
-      status: row.status,
-      notes: row.notes || "",
-    });
-    setError("");
-  }
-
-  async function handleDelete(id: string) {
+  async function updateRow(
+    rowId: string,
+    updates: Partial<Pick<ChildScheduleRow, "start_time" | "end_time" | "status" | "notes">>,
+  ) {
     if (!supabase) return;
-    const ok = window.confirm("Supprimer cette présence du planning enfants ?");
-    if (!ok) return;
 
-    setLoading(true);
-    setError("");
     try {
-      const { error: deleteError } = await supabase.from("child_schedules").delete().eq("id", id);
-      if (deleteError) throw deleteError;
+      const { error } = await supabase.from("child_schedules").update(updates).eq("id", rowId);
+      if (error) throw error;
       await loadSchedules();
-      if (editingId === id) resetForm();
-    } catch (err: any) {
-      setError(err?.message || "Impossible de supprimer cette présence.");
-    } finally {
-      setLoading(false);
+    } catch (error: any) {
+      console.error("Schedule update failed", error);
+      setErrorMessage(error?.message || "Modification impossible.");
     }
   }
 
-  function entriesForDate(date: Date) {
-    const key = toInputDate(date);
-    return schedules.filter((item) => item.date === key);
+  async function deleteRow(rowId: string) {
+    if (!supabase) return;
+
+    try {
+      const { error } = await supabase.from("child_schedules").delete().eq("id", rowId);
+      if (error) throw error;
+      await loadSchedules();
+    } catch (error: any) {
+      console.error("Schedule delete failed", error);
+      setErrorMessage(error?.message || "Suppression impossible.");
+    }
   }
 
-  function childLabel(childId: string) {
-    const child = children.find((item) => item.id === childId);
-    return child ? `${child.firstName} ${child.lastName}` : "Enfant introuvable";
+  function toggleChild(childId: string) {
+    setSelectedChildIds((current) =>
+      current.includes(childId) ? current.filter((id) => id !== childId) : [...current, childId],
+    );
   }
 
-  function childGroup(childId: string) {
-    const child = children.find((item) => item.id === childId);
-    return child?.group?.name || "Sans groupe";
+  function toggleWeekDay(dayKey: number) {
+    setSelectedWeekDays((current) =>
+      current.includes(dayKey) ? current.filter((key) => key !== dayKey) : [...current, dayKey],
+    );
   }
 
-  function childPhoto(childId: string) {
-    const child = children.find((item) => item.id === childId);
-    return child?.photo || "";
+  function selectAllFilteredChildren() {
+    setSelectedChildIds(filteredChildren.map((child) => child.id));
+  }
+
+  function clearSelectedChildren() {
+    setSelectedChildIds([]);
   }
 
   return (
@@ -269,236 +255,337 @@ export default function PlanningChildren() {
       <div className="p-6 max-w-7xl mx-auto space-y-6">
         <SectionTitle
           title="Planning enfants"
-          subtitle="Création, modification et suivi des présences planifiées par jour."
+          subtitle="Planification par lot sur une journée ou sur toute la semaine, avec édition et suppression."
         />
 
         <Card className="rounded-2xl shadow-soft">
-          <CardHeader className="flex flex-row items-center justify-between gap-3 space-y-0">
-            <CardTitle>{editingId ? "Modifier une présence" : "Ajouter une présence"}</CardTitle>
-            <div className="flex items-center gap-2">
-              <Button
-                type="button"
-                variant="outline"
-                className="rounded-xl"
-                onClick={() => setWeekStart((current) => addDays(current, -7))}
-              >
-                <ChevronLeft className="h-4 w-4 mr-1" />
-                Semaine précédente
-              </Button>
-              <Button
-                type="button"
-                variant="outline"
-                className="rounded-xl"
-                onClick={() => setWeekStart(startOfWeek(new Date()))}
-              >
-                Cette semaine
-              </Button>
-              <Button
-                type="button"
-                variant="outline"
-                className="rounded-xl"
-                onClick={() => setWeekStart((current) => addDays(current, 7))}
-              >
-                Semaine suivante
-                <ChevronRight className="h-4 w-4 ml-1" />
-              </Button>
-            </div>
+          <CardHeader>
+            <CardTitle>Planification en masse</CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
-            <p className="text-sm text-muted-foreground">
-              Semaine du {formatHeaderDate(weekStart)} au {formatHeaderDate(addDays(weekStart, 4))}
-            </p>
+            {errorMessage ? (
+              <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
+                {errorMessage}
+              </div>
+            ) : null}
 
-            <div className="grid md:grid-cols-2 xl:grid-cols-3 gap-4">
-              <div className="space-y-2">
-                <Label>Enfant</Label>
-                <Select
-                  value={form.childId}
-                  onValueChange={(value) => setForm((current) => ({ ...current, childId: value }))}
+            <div className="grid lg:grid-cols-4 gap-3">
+              <div>
+                <label className="text-sm text-muted-foreground mb-1 block">Mode</label>
+                <select
+                  className="w-full border rounded-lg p-2 text-sm bg-background"
+                  value={mode}
+                  onChange={(e) => setMode(e.target.value as "day" | "week")}
                 >
-                  <SelectTrigger className="rounded-xl">
-                    <SelectValue placeholder="Choisir un enfant" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {children.map((child) => (
-                      <SelectItem key={child.id} value={child.id}>
-                        {child.firstName} {child.lastName}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                  <option value="day">Jour unique</option>
+                  <option value="week">Semaine</option>
+                </select>
               </div>
 
-              <div className="space-y-2">
-                <Label>Date</Label>
-                <Input
-                  type="date"
-                  className="rounded-xl"
-                  value={form.date}
-                  onChange={(event) =>
-                    setForm((current) => ({ ...current, date: event.target.value }))
-                  }
-                />
-              </div>
-
-              <div className="space-y-2">
-                <Label>Statut</Label>
-                <Select
-                  value={form.status}
-                  onValueChange={(value: ScheduleStatus) =>
-                    setForm((current) => ({ ...current, status: value }))
-                  }
+              <div>
+                <label className="text-sm text-muted-foreground mb-1 block">Groupe</label>
+                <select
+                  className="w-full border rounded-lg p-2 text-sm bg-background"
+                  value={selectedGroupId}
+                  onChange={(e) => setSelectedGroupId(e.target.value)}
                 >
-                  <SelectTrigger className="rounded-xl">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="planned">Planifié</SelectItem>
-                    <SelectItem value="absent">Absent</SelectItem>
-                    <SelectItem value="cancelled">Annulé</SelectItem>
-                  </SelectContent>
-                </Select>
+                  <option value="all">Tous les groupes</option>
+                  {Array.from(
+                    new Map(
+                      children
+                        .filter((child) => child.group)
+                        .map((child) => [child.group!.id, child.group!.name]),
+                    ).entries(),
+                  ).map(([groupId, groupName]) => (
+                    <option key={groupId} value={groupId}>
+                      {groupName}
+                    </option>
+                  ))}
+                </select>
               </div>
 
-              <div className="space-y-2">
-                <Label>Heure début</Label>
-                <Input
-                  type="time"
-                  className="rounded-xl"
-                  value={form.startTime}
-                  onChange={(event) =>
-                    setForm((current) => ({ ...current, startTime: event.target.value }))
-                  }
-                />
+              <div>
+                <label className="text-sm text-muted-foreground mb-1 block">
+                  Heure de début
+                </label>
+                <Input type="time" value={startTime} onChange={(e) => setStartTime(e.target.value)} />
               </div>
 
-              <div className="space-y-2">
-                <Label>Heure fin</Label>
-                <Input
-                  type="time"
-                  className="rounded-xl"
-                  value={form.endTime}
-                  onChange={(event) =>
-                    setForm((current) => ({ ...current, endTime: event.target.value }))
-                  }
-                />
+              <div>
+                <label className="text-sm text-muted-foreground mb-1 block">Heure de fin</label>
+                <Input type="time" value={endTime} onChange={(e) => setEndTime(e.target.value)} />
               </div>
             </div>
 
-            <div className="space-y-2">
-              <Label>Notes</Label>
+            <div className="grid lg:grid-cols-3 gap-3">
+              <div>
+                <label className="text-sm text-muted-foreground mb-1 block">Statut</label>
+                <select
+                  className="w-full border rounded-lg p-2 text-sm bg-background"
+                  value={status}
+                  onChange={(e) => setStatus(e.target.value as ScheduleStatus)}
+                >
+                  <option value="planned">Prévu</option>
+                  <option value="absent">Absent</option>
+                  <option value="cancelled">Annulé</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="text-sm text-muted-foreground mb-1 block">
+                  Jour ciblé
+                </label>
+                <Input
+                  type="date"
+                  value={selectedDate}
+                  onChange={(e) => setSelectedDate(e.target.value)}
+                  disabled={mode !== "day"}
+                />
+              </div>
+
+              <div>
+                <label className="text-sm text-muted-foreground mb-1 block">Semaine</label>
+                <div className="flex gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="rounded-xl"
+                    onClick={() => setWeekStart((current) => addDays(current, -7))}
+                  >
+                    Semaine -
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="rounded-xl"
+                    onClick={() => setWeekStart((current) => addDays(current, 7))}
+                  >
+                    Semaine +
+                  </Button>
+                </div>
+              </div>
+            </div>
+
+            {mode === "week" ? (
+              <div>
+                <label className="text-sm text-muted-foreground mb-2 block">
+                  Jours à planifier
+                </label>
+                <div className="flex flex-wrap gap-2">
+                  {weekDays.map((day) => {
+                    const active = selectedWeekDays.includes(day.key);
+                    return (
+                      <button
+                        key={day.key}
+                        type="button"
+                        onClick={() => toggleWeekDay(day.key)}
+                        className={`rounded-full px-3 py-1.5 text-sm border ${
+                          active
+                            ? "bg-primary text-primary-foreground border-primary"
+                            : "bg-background border-border"
+                        }`}
+                      >
+                        {day.label}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            ) : null}
+
+            <div>
+              <div className="flex items-center justify-between gap-3 mb-2">
+                <label className="text-sm text-muted-foreground block">
+                  Enfants sélectionnés ({selectedChildIds.length})
+                </label>
+                <div className="flex gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="rounded-xl"
+                    onClick={selectAllFilteredChildren}
+                  >
+                    Tout sélectionner
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="rounded-xl"
+                    onClick={clearSelectedChildren}
+                  >
+                    Tout vider
+                  </Button>
+                </div>
+              </div>
+
+              <div className="grid md:grid-cols-2 xl:grid-cols-3 gap-3">
+                {filteredChildren.map((child) => {
+                  const active = selectedChildIds.includes(child.id);
+                  return (
+                    <button
+                      type="button"
+                      key={child.id}
+                      onClick={() => toggleChild(child.id)}
+                      className={`rounded-2xl border p-3 text-left transition ${
+                        active
+                          ? "border-primary bg-primary/5"
+                          : "border-border/40 bg-background"
+                      }`}
+                    >
+                      <div className="flex items-center gap-3">
+                        <img
+                          src={child.photo}
+                          alt={child.firstName}
+                          className="h-11 w-11 rounded-2xl object-cover"
+                        />
+                        <div className="min-w-0">
+                          <p className="font-medium truncate">
+                            {child.firstName} {child.lastName}
+                          </p>
+                          <p className="text-sm text-muted-foreground truncate">
+                            {child.group?.name || "Sans groupe"}
+                          </p>
+                        </div>
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div>
+              <label className="text-sm text-muted-foreground mb-1 block">Notes</label>
               <Textarea
-                className="rounded-2xl min-h-[100px]"
-                placeholder="Informations utiles pour cette présence"
-                value={form.notes}
-                onChange={(event) =>
-                  setForm((current) => ({ ...current, notes: event.target.value }))
-                }
+                placeholder="Note facultative pour toute la sélection"
+                value={notes}
+                onChange={(e) => setNotes(e.target.value)}
               />
             </div>
 
-            {error ? <p className="text-sm text-destructive">{error}</p> : null}
-
-            <div className="flex items-center gap-3">
-              <Button className="rounded-xl" onClick={handleSubmit} disabled={loading}>
-                {editingId ? "Enregistrer la modification" : "Ajouter au planning"}
-              </Button>
-              {editingId ? (
-                <Button type="button" variant="outline" className="rounded-xl" onClick={resetForm}>
-                  Annuler l'édition
-                </Button>
-              ) : null}
-            </div>
+            <Button className="rounded-xl" onClick={applyBulkPlan} disabled={saving || loading}>
+              {saving ? "Enregistrement..." : "Planifier la sélection"}
+            </Button>
           </CardContent>
         </Card>
 
-        {weekDays.map(({ label, date }) => {
-          const entries = entriesForDate(date);
+        {weekDays.map((day) => {
+          const dayDate = toISODate(addDays(weekStart, day.key - 1));
+          const dayRows = groupedByDay.get(dayDate) ?? [];
 
           return (
-            <Card key={label} className="rounded-2xl shadow-soft">
+            <Card key={day.key} className="rounded-2xl shadow-soft">
               <CardContent className="p-5 space-y-3">
-                <div className="flex items-center justify-between">
+                <div className="flex items-center justify-between gap-3">
                   <div>
-                    <h2 className="font-display font-semibold">{label}</h2>
-                    <p className="text-sm text-muted-foreground">{formatHeaderDate(date)}</p>
+                    <h2 className="font-display font-semibold">{day.label}</h2>
+                    <p className="text-sm text-muted-foreground">{formatShortDate(addDays(weekStart, day.key - 1))}</p>
                   </div>
                   <span className="text-sm text-muted-foreground">
-                    {entries.length} présence{entries.length > 1 ? "s" : ""} planifiée{entries.length > 1 ? "s" : ""}
+                    {dayRows.length} présence{dayRows.length > 1 ? "s" : ""}
                   </span>
                 </div>
 
-                {loading && !entries.length ? (
-                  <p className="text-sm text-muted-foreground">Chargement...</p>
-                ) : null}
+                <div className="grid md:grid-cols-2 xl:grid-cols-3 gap-3">
+                  {dayRows.length === 0 ? (
+                    <div className="rounded-2xl border border-dashed border-border/50 p-4 text-sm text-muted-foreground">
+                      Aucune présence planifiée.
+                    </div>
+                  ) : (
+                    dayRows.map((row) => {
+                      const child = children.find((item) => item.id === row.child_id);
+                      if (!child) return null;
 
-                {!entries.length ? (
-                  <div className="rounded-2xl border border-dashed border-border/60 p-4 text-sm text-muted-foreground">
-                    Aucune présence enregistrée pour ce jour.
-                  </div>
-                ) : (
-                  <div className="grid md:grid-cols-2 xl:grid-cols-3 gap-3">
-                    {entries.map((entry) => (
-                      <div
-                        key={entry.id}
-                        className="rounded-2xl border border-border/40 p-3 space-y-3"
-                      >
-                        <div className="flex items-start justify-between gap-3">
-                          <div className="flex items-center gap-3 min-w-0">
-                            {childPhoto(entry.child_id) ? (
+                      return (
+                        <div
+                          key={row.id}
+                          className="rounded-2xl border border-border/40 p-3 space-y-3"
+                        >
+                          <div className="flex items-center justify-between gap-3">
+                            <div className="flex items-center gap-3 min-w-0">
                               <img
-                                src={childPhoto(entry.child_id)}
-                                alt={childLabel(entry.child_id)}
+                                src={child.photo}
+                                alt={child.firstName}
                                 className="h-11 w-11 rounded-2xl object-cover"
                               />
-                            ) : null}
-                            <div className="min-w-0">
-                              <p className="font-medium truncate">{childLabel(entry.child_id)}</p>
-                              <p className="text-sm text-muted-foreground">{childGroup(entry.child_id)}</p>
+                              <div className="min-w-0">
+                                <p className="font-medium truncate">
+                                  {child.firstName} {child.lastName}
+                                </p>
+                                <p className="text-sm text-muted-foreground truncate">
+                                  {child.group?.name || "Sans groupe"}
+                                </p>
+                              </div>
                             </div>
+                            <Badge className={statusBadgeClass(row.status)}>
+                              {row.status}
+                            </Badge>
                           </div>
-                          <Badge className="rounded-full border-0 bg-primary/10 text-primary">
-                            {STATUS_LABEL[entry.status]}
-                          </Badge>
-                        </div>
 
-                        <div className="flex items-center justify-between gap-3">
-                          <span className="text-xs rounded-full px-2.5 py-1 bg-primary/10 text-primary">
-                            {entry.start_time}–{entry.end_time}
-                          </span>
-                          <div className="flex items-center gap-2">
-                            <Button
-                              type="button"
-                              variant="outline"
-                              size="icon"
-                              className="rounded-xl"
-                              onClick={() => startEdit(entry)}
-                            >
-                              <Pencil className="h-4 w-4" />
-                            </Button>
-                            <Button
-                              type="button"
-                              variant="outline"
-                              size="icon"
-                              className="rounded-xl"
-                              onClick={() => void handleDelete(entry.id)}
-                            >
-                              <Trash2 className="h-4 w-4" />
-                            </Button>
+                          <div className="grid grid-cols-2 gap-2">
+                            <Input
+                              type="time"
+                              value={row.start_time || ""}
+                              disabled={row.status !== "planned"}
+                              onChange={(e) =>
+                                void updateRow(row.id, { start_time: e.target.value || null })
+                              }
+                            />
+                            <Input
+                              type="time"
+                              value={row.end_time || ""}
+                              disabled={row.status !== "planned"}
+                              onChange={(e) =>
+                                void updateRow(row.id, { end_time: e.target.value || null })
+                              }
+                            />
                           </div>
-                        </div>
 
-                        {entry.notes ? (
-                          <p className="text-sm text-muted-foreground">{entry.notes}</p>
-                        ) : null}
-                      </div>
-                    ))}
-                  </div>
-                )}
+                          <select
+                            className="w-full border rounded-lg p-2 text-sm bg-background"
+                            value={row.status}
+                            onChange={(e) =>
+                              void updateRow(row.id, {
+                                status: e.target.value as ScheduleStatus,
+                                start_time:
+                                  e.target.value === "planned" ? row.start_time : null,
+                                end_time: e.target.value === "planned" ? row.end_time : null,
+                              })
+                            }
+                          >
+                            <option value="planned">Prévu</option>
+                            <option value="absent">Absent</option>
+                            <option value="cancelled">Annulé</option>
+                          </select>
+
+                          <Textarea
+                            value={row.notes || ""}
+                            placeholder="Notes"
+                            onChange={(e) =>
+                              void updateRow(row.id, { notes: e.target.value || null })
+                            }
+                          />
+
+                          <Button
+                            type="button"
+                            variant="outline"
+                            className="w-full rounded-xl"
+                            onClick={() => void deleteRow(row.id)}
+                          >
+                            Supprimer
+                          </Button>
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
               </CardContent>
             </Card>
           );
         })}
+
+        {loading ? (
+          <div className="text-sm text-muted-foreground">Chargement du planning...</div>
+        ) : null}
       </div>
     </BackOfficeLayout>
   );
