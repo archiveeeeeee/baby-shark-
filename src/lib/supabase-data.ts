@@ -34,6 +34,16 @@ const childPhotoMap: Record<string, string> = {
   Nathan: childNathan,
 };
 
+type UploadDocumentPayload = {
+  structureId: string;
+  title: string;
+  description?: string;
+  documentType: string;
+  entityType: "structure" | "parent" | "child" | "contract";
+  entityId: string;
+  file: File;
+};
+
 export async function fetchRemoteState(): Promise<AppState | null> {
   if (!isSupabaseConfigured || !supabase) return null;
 
@@ -122,7 +132,7 @@ export async function fetchRemoteState(): Promise<AppState | null> {
       .filter((link: any) => link.parent_id === row.id)
       .map((link: any) => link.child_id),
     documents: documents
-      .filter((doc: any) => doc.linked_type === "parent" && doc.linked_id === row.id)
+      .filter((doc: any) => doc.entity_type === "parent" && doc.entity_id === row.id)
       .map((doc: any) => mapDocument(doc)),
   }));
 
@@ -139,28 +149,28 @@ export async function fetchRemoteState(): Promise<AppState | null> {
   }));
 
   const children: Child[] = ensureData(childrenRes.data).map((row: any) => ({
-  id: row.id,
-  firstName: row.first_name,
-  lastName: row.last_name,
-  birthDate: row.birth_date || "",
-  groupId: row.group_id || "",
-  parentIds: childParents
-    .filter((link: any) => link.child_id === row.id)
-    .map((link: any) => link.parent_id),
-  authorizedPickup: pickups
-    .filter((pickup: any) => pickup.child_id === row.id)
-    .map((pickup: any) => pickup.full_name),
-  medicalNotes: row.health_notes || "",
-  allergies: Array.isArray(row.allergies)
-    ? row.allergies
-    : typeof row.allergies === "string"
-      ? row.allergies.split(",").map((item: string) => item.trim()).filter(Boolean)
-      : [],
-  photo: row.photo_url || childPhotoMap[row.first_name] || childLucas,
-  activeContractId: contracts.find(
-    (contract) => contract.childId === row.id && contract.status !== "ended",
-  )?.id,
-}));
+    id: row.id,
+    firstName: row.first_name,
+    lastName: row.last_name,
+    birthDate: row.birth_date || "",
+    groupId: row.group_id || "",
+    parentIds: childParents
+      .filter((link: any) => link.child_id === row.id)
+      .map((link: any) => link.parent_id),
+    authorizedPickup: pickups
+      .filter((pickup: any) => pickup.child_id === row.id)
+      .map((pickup: any) => pickup.full_name),
+    medicalNotes: row.health_notes || "",
+    allergies: Array.isArray(row.allergies)
+      ? row.allergies
+      : typeof row.allergies === "string"
+        ? row.allergies.split(",").map((item: string) => item.trim()).filter(Boolean)
+        : [],
+    photo: row.photo_url || childPhotoMap[row.first_name] || childLucas,
+    activeContractId: contracts.find(
+      (contract) => contract.childId === row.id && contract.status !== "ended",
+    )?.id,
+  }));
 
   const invoices: Invoice[] = ensureData(invoicesRes.data).map((row: any) => ({
     id: row.id,
@@ -489,7 +499,7 @@ export async function bootstrapRemoteFromSeed() {
   }
 
   for (const document of seedState.documents) {
-    const linkedId =
+    const entityId =
       document.linkedTo.type === "parent"
         ? parentMap.get(document.linkedTo.id)
         : document.linkedTo.type === "child"
@@ -499,12 +509,17 @@ export async function bootstrapRemoteFromSeed() {
             : structureId;
 
     const { error } = await supabase.from("documents").insert({
-      structure_id: structureId,
+      tenant_id: tenantId,
+      entity_type: document.linkedTo.type,
+      entity_id: entityId,
+      document_type: document.category,
       title: document.title,
-      category: document.category,
-      linked_type: document.linkedTo.type,
-      linked_id: linkedId,
-      created_at: document.uploadedAt,
+      file_path: "",
+      status: "active",
+      metadata: {
+        uploaded_at: document.uploadedAt,
+        description: "",
+      },
     });
     if (error) throw error;
   }
@@ -678,14 +693,58 @@ export async function insertDocument(
   payload: Omit<DocumentRecord, "id" | "uploadedAt">,
 ) {
   if (!supabase) return;
+
+  const tenantId = await getTenantId();
+  const metadata = (payload as any).metadata ?? {};
+
   const { error } = await supabase.from("documents").insert({
-    structure_id: structureId,
+    tenant_id: tenantId,
+    entity_type: payload.linkedTo.type,
+    entity_id: payload.linkedTo.id,
+    document_type: payload.category,
     title: payload.title,
-    category: payload.category,
-    linked_type: payload.linkedTo.type,
-    linked_id: payload.linkedTo.id,
+    file_path: (payload as any).filePath || "",
+    status: (payload as any).status || "active",
+    metadata,
   });
   if (error) throw error;
+}
+
+export async function uploadDocumentAndCreate(payload: UploadDocumentPayload) {
+  if (!supabase) return;
+
+  const tenantId = await getTenantId();
+  if (!tenantId) throw new Error("tenant_id introuvable");
+
+  const safeName = payload.file.name.replace(/[^a-zA-Z0-9.\-_]/g, "_");
+  const storagePath = `${tenantId}/${payload.entityType}/${payload.entityId}/${Date.now()}-${safeName}`;
+
+  const { error: uploadError } = await supabase.storage
+    .from("documents")
+    .upload(storagePath, payload.file, {
+      upsert: false,
+      cacheControl: "3600",
+    });
+
+  if (uploadError) throw uploadError;
+
+  const { error: insertError } = await supabase.from("documents").insert({
+    tenant_id: tenantId,
+    entity_type: payload.entityType,
+    entity_id: payload.entityId,
+    document_type: payload.documentType,
+    title: payload.title,
+    file_path: storagePath,
+    status: "active",
+    metadata: {
+      description: payload.description || "",
+      original_name: payload.file.name,
+      mime_type: payload.file.type || null,
+      size: payload.file.size,
+    },
+  });
+
+  if (insertError) throw insertError;
 }
 
 export async function insertDevice(
@@ -727,10 +786,15 @@ function mapDocument(doc: any): DocumentRecord {
   return {
     id: doc.id,
     title: doc.title,
-    category: doc.category,
-    linkedTo: { type: doc.linked_type, id: doc.linked_id },
+    category: doc.document_type,
+    linkedTo: { type: doc.entity_type, id: doc.entity_id },
     uploadedAt: doc.created_at,
-  };
+    ...{
+      description: doc.metadata?.description || "",
+      filePath: doc.file_path || "",
+      status: doc.status || "",
+    },
+  } as DocumentRecord;
 }
 
 function colorClassFromGroupName(name: string) {
