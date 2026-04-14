@@ -551,6 +551,7 @@ export async function bootstrapRemoteFromSeed() {
   for (const message of seedState.messages) {
     const { error } = await supabase.from("message_threads").insert({
       structure_id: structureId,
+      tenant_id: tenantId,
       title: message.title,
       audience: message.audience,
       last_message: message.lastMessage,
@@ -768,8 +769,12 @@ export async function insertMessageThread(
   payload: Omit<MessageThread, "id" | "updatedAt">,
 ) {
   if (!supabase) return;
+
+  const tenantId = await getTenantId();
+
   const { error } = await supabase.from("message_threads").insert({
     structure_id: structureId,
+    tenant_id: tenantId,
     title: payload.title,
     audience: payload.audience,
     last_message: payload.lastMessage,
