@@ -14,6 +14,8 @@ type SignatureWorkflowState = {
   status: UiSignatureStatus;
   sentAt?: string;
   reminderCount: number;
+  signedAt?: string | null;
+  signedBy?: string | null;
 };
 
 function formatDate(value?: string) {
@@ -70,6 +72,8 @@ export default function SignaturePage() {
                 ? current[contract.id]?.sentAt ?? contract.startDate
                 : undefined,
             reminderCount: current[contract.id]?.reminderCount ?? 0,
+            signedAt: contract.signatureSignedAt ?? current[contract.id]?.signedAt ?? null,
+            signedBy: contract.signedBy ?? current[contract.id]?.signedBy ?? null,
           },
         ]),
       ),
@@ -99,6 +103,8 @@ export default function SignaturePage() {
               ? contract.startDate
               : undefined,
           reminderCount: 0,
+          signedAt: contract.signatureSignedAt ?? null,
+          signedBy: contract.signedBy ?? null,
         };
 
         return {
@@ -122,20 +128,23 @@ export default function SignaturePage() {
     setWorkflow((current) => ({
       ...current,
       [contractId]: {
-        ...(current[contractId] ?? { status: "not_started", reminderCount: 0 }),
+        ...(current[contractId] ?? { status: "not_started", reminderCount: 0, signedAt: null, signedBy: null }),
         ...next,
       },
     }));
   };
 
-  const persistSignatureStatus = async (contractId: string, nextStatus: UiSignatureStatus) => {
+  const persistSignatureStatus = async (contractId: string, nextStatus: UiSignatureStatus, signerEmail?: string) => {
     setSelectedId(contractId);
     setFeedback(null);
 
     if (!isSupabaseConfigured || !supabase) {
+      const nowIso = new Date().toISOString();
       updateWorkflow(contractId, {
         status: nextStatus,
-        sentAt: nextStatus === "pending" || nextStatus === "signed" ? new Date().toISOString() : undefined,
+        sentAt: nextStatus === "pending" || nextStatus === "signed" ? nowIso : undefined,
+        signedAt: nextStatus === "signed" ? nowIso : null,
+        signedBy: nextStatus === "signed" ? signerEmail ?? null : null,
       });
       setFeedback({
         type: "success",
@@ -147,11 +156,14 @@ export default function SignaturePage() {
     setBusyById((current) => ({ ...current, [contractId]: true }));
 
     try {
+      const nowIso = new Date().toISOString();
       const payload =
         nextStatus === "signed"
           ? {
               signature_status: "signed",
               status: "active",
+              signature_signed_at: nowIso,
+              signed_by: signerEmail ?? null,
             }
           : {
               signature_status: "pending",
@@ -164,9 +176,12 @@ export default function SignaturePage() {
         throw error;
       }
 
+      const nowIso = new Date().toISOString();
       updateWorkflow(contractId, {
         status: nextStatus,
-        sentAt: nextStatus === "pending" || nextStatus === "signed" ? new Date().toISOString() : undefined,
+        sentAt: nextStatus === "pending" || nextStatus === "signed" ? nowIso : undefined,
+        signedAt: nextStatus === "signed" ? nowIso : null,
+        signedBy: nextStatus === "signed" ? signerEmail ?? null : null,
       });
 
       await refresh();
@@ -263,7 +278,7 @@ export default function SignaturePage() {
                           variant={canSend ? "default" : "secondary"}
                           disabled={!canSend || isBusy}
                           onClick={() => {
-                            void persistSignatureStatus(contract.id, "pending");
+                            void persistSignatureStatus(contract.id, "pending", contract.parentEmail);
                           }}
                         >
                           {isBusy && canSend ? "Envoi..." : "Envoyer à signer"}
@@ -290,7 +305,7 @@ export default function SignaturePage() {
                           className="rounded-xl"
                           disabled={!canMarkSigned || isBusy}
                           onClick={() => {
-                            void persistSignatureStatus(contract.id, "signed");
+                            void persistSignatureStatus(contract.id, "signed", contract.parentEmail);
                           }}
                         >
                           {isBusy && canMarkSigned ? "Enregistrement..." : "Marquer signé"}
@@ -318,6 +333,12 @@ export default function SignaturePage() {
                               ? "Signature parent attendue"
                               : "Envoi initial à déclencher"}
                         </p>
+                        {contract.workflow.status === "signed" ? (
+                          <p className="mt-2 text-xs text-muted-foreground">
+                            Signé le {formatDate(contract.workflow.signedAt ?? undefined)}
+                            {contract.workflow.signedBy ? ` · par ${contract.workflow.signedBy}` : ""}
+                          </p>
+                        ) : null}
                       </div>
                     </div>
                   </CardContent>
@@ -345,6 +366,16 @@ export default function SignaturePage() {
                     <p className="text-sm text-muted-foreground">Début prévu : {formatDate(selectedContract.startDate)}</p>
                     <p className="text-sm text-muted-foreground">Cadence : {selectedContract.scheduleLabel}</p>
                     <p className="text-sm text-muted-foreground">Tarif : {selectedContract.pricingLabel}</p>
+                    {selectedContract.workflow.status === "signed" ? (
+                      <>
+                        <p className="text-sm text-muted-foreground">
+                          Signé le : {formatDate(selectedContract.workflow.signedAt ?? undefined)}
+                        </p>
+                        <p className="text-sm text-muted-foreground">
+                          Signé par : {selectedContract.workflow.signedBy ?? "Non renseigné"}
+                        </p>
+                      </>
+                    ) : null}
                   </div>
 
                   <div className="rounded-2xl border border-amber-200 bg-amber-50/70 p-4 text-sm text-amber-900 leading-relaxed">
