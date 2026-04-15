@@ -212,11 +212,11 @@ export async function fetchRemoteState(): Promise<AppState | null> {
 
   const devices: Device[] = ensureData(devicesRes.data).map((row: any) => ({
     id: row.id,
-    label: row.label,
-    type: row.type,
-    code: row.enrollment_code,
-    visibleModules: row.visible_modules || [],
-    lastSeen: row.last_seen || row.created_at,
+    label: row.name,
+    type: row.device_type,
+    code: row.code,
+    visibleModules: row.metadata?.visible_modules || [],
+    lastSeen: row.last_seen_at || row.created_at,
   }));
 
   const teamShifts: TeamShift[] = ensureData(shiftsRes.data).map((row: any) => ({
@@ -526,12 +526,17 @@ export async function bootstrapRemoteFromSeed() {
 
   for (const device of seedState.devices) {
     const { error } = await supabase.from("devices").insert({
-      structure_id: structureId,
-      label: device.label,
-      type: device.type,
-      enrollment_code: device.code,
-      visible_modules: device.visibleModules,
-      last_seen: device.lastSeen,
+      tenant_id: tenantId,
+      code: device.code,
+      name: device.label,
+      device_type: device.type,
+      scope: "structure",
+      is_active: true,
+      last_seen_at: device.lastSeen,
+      metadata: {
+        visible_modules: device.visibleModules || [],
+        structure_id: structureId,
+      },
     });
     if (error) throw error;
   }
@@ -753,13 +758,20 @@ export async function insertDevice(
   payload: Omit<Device, "id" | "lastSeen">,
 ) {
   if (!supabase) return;
+
+  const tenantId = await getTenantId();
   const { error } = await supabase.from("devices").insert({
-    structure_id: structureId,
-    label: payload.label,
-    type: payload.type,
-    enrollment_code: payload.code,
-    visible_modules: payload.visibleModules,
-    last_seen: new Date().toISOString(),
+    tenant_id: tenantId,
+    code: payload.code,
+    name: payload.label,
+    device_type: payload.type,
+    scope: "structure",
+    is_active: true,
+    last_seen_at: new Date().toISOString(),
+    metadata: {
+      visible_modules: payload.visibleModules || [],
+      structure_id: structureId,
+    },
   });
   if (error) throw error;
 }
