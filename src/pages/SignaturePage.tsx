@@ -1,10 +1,11 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { BackOfficeLayout } from "@/components/BackOfficeLayout";
 import { SectionTitle } from "@/components/SectionTitle";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { useAppData } from "@/context/AppDataContext";
+import { isSupabaseConfigured, supabase } from "@/lib/supabase";
 import type { Contract } from "@/types";
 
 type UiSignatureStatus = Contract["signatureStatus"];
@@ -51,21 +52,40 @@ function getStatusMeta(status: UiSignatureStatus) {
 }
 
 export default function SignaturePage() {
-  const { state } = useAppData();
-
-  const [workflow, setWorkflow] = useState<Record<string, SignatureWorkflowState>>(() =>
-    Object.fromEntries(
-      state.contracts.map((contract) => [
-        contract.id,
-        {
-          status: contract.signatureStatus,
-          sentAt: contract.signatureStatus === "pending" || contract.signatureStatus === "signed" ? contract.startDate : undefined,
-          reminderCount: 0,
-        },
-      ]),
-    ),
-  );
+  const { state, refresh } = useAppData();
+  const [workflow, setWorkflow] = useState<Record<string, SignatureWorkflowState>>({});
   const [selectedId, setSelectedId] = useState<string | null>(state.contracts[0]?.id ?? null);
+  const [busyById, setBusyById] = useState<Record<string, boolean>>({});
+  const [feedback, setFeedback] = useState<{ type: "success" | "error"; message: string } | null>(null);
+
+  useEffect(() => {
+    setWorkflow((current) =>
+      Object.fromEntries(
+        state.contracts.map((contract) => [
+          contract.id,
+          {
+            status: contract.signatureStatus,
+            sentAt:
+              contract.signatureStatus === "pending" || contract.signatureStatus === "signed"
+                ? current[contract.id]?.sentAt ?? contract.startDate
+                : undefined,
+            reminderCount: current[contract.id]?.reminderCount ?? 0,
+          },
+        ]),
+      ),
+    );
+  }, [state.contracts]);
+
+  useEffect(() => {
+    if (!selectedId && state.contracts[0]?.id) {
+      setSelectedId(state.contracts[0].id);
+      return;
+    }
+
+    if (selectedId && !state.contracts.some((contract) => contract.id === selectedId)) {
+      setSelectedId(state.contracts[0]?.id ?? null);
+    }
+  }, [selectedId, state.contracts]);
 
   const contracts = useMemo(
     () =>
@@ -74,7 +94,10 @@ export default function SignaturePage() {
         const parent = state.parents.find((item) => item.id === contract.payerParentId);
         const current = workflow[contract.id] ?? {
           status: contract.signatureStatus,
-          sentAt: undefined,
+          sentAt:
+            contract.signatureStatus === "pending" || contract.signatureStatus === "signed"
+              ? contract.startDate
+              : undefined,
           reminderCount: 0,
         };
 
@@ -105,6 +128,67 @@ export default function SignaturePage() {
     }));
   };
 
+  const persistSignatureStatus = async (contractId: string, nextStatus: UiSignatureStatus) => {
+    setSelectedId(contractId);
+    setFeedback(null);
+
+    if (!isSupabaseConfigured || !supabase) {
+      updateWorkflow(contractId, {
+        status: nextStatus,
+        sentAt: nextStatus === "pending" || nextStatus === "signed" ? new Date().toISOString() : undefined,
+      });
+      setFeedback({
+        type: "success",
+        message: "Mode local : le statut a été mis à jour dans l'application, sans persistance distante.",
+      });
+      return;
+    }
+
+    setBusyById((current) => ({ ...current, [contractId]: true }));
+
+    try {
+      const payload =
+        nextStatus === "signed"
+          ? {
+              signature_status: "signed",
+              status: "active",
+            }
+          : {
+              signature_status: "pending",
+              status: "ready_for_signature",
+            };
+
+      const { error } = await supabase.from("contracts").update(payload).eq("id", contractId);
+
+      if (error) {
+        throw error;
+      }
+
+      updateWorkflow(contractId, {
+        status: nextStatus,
+        sentAt: nextStatus === "pending" || nextStatus === "signed" ? new Date().toISOString() : undefined,
+      });
+
+      await refresh();
+
+      setFeedback({
+        type: "success",
+        message:
+          nextStatus === "signed"
+            ? "Le contrat a bien été marqué signé dans Supabase. Après refresh, il reste signé."
+            : "Le contrat a bien été marqué comme envoyé à signer dans Supabase.",
+      });
+    } catch (error) {
+      console.error("Signature workflow update failed", error);
+      setFeedback({
+        type: "error",
+        message: "La mise à jour Supabase a échoué. Le statut n'a pas été persisté.",
+      });
+    } finally {
+      setBusyById((current) => ({ ...current, [contractId]: false }));
+    }
+  };
+
   return (
     <BackOfficeLayout>
       <div className="p-6 max-w-7xl mx-auto space-y-6">
@@ -112,6 +196,18 @@ export default function SignaturePage() {
           title="Signature"
           subtitle="Ici, on pilote réellement l’envoi, la relance et le suivi des contrats à signer. Le branchement prestataire viendra plus tard, mais l’écran doit déjà servir au métier."
         />
+
+        {feedback ? (
+          <div
+            className={`rounded-2xl border px-4 py-3 text-sm ${
+              feedback.type === "success"
+                ? "border-emerald-200 bg-emerald-50 text-emerald-800"
+                : "border-red-200 bg-red-50 text-red-800"
+            }`}
+          >
+            {feedback.message}
+          </div>
+        ) : null}
 
         <div className="grid md:grid-cols-2 xl:grid-cols-4 gap-4">
           {[
@@ -137,6 +233,7 @@ export default function SignaturePage() {
               const canSend = contract.workflow.status === "not_started";
               const canRemind = contract.workflow.status === "pending";
               const canMarkSigned = contract.workflow.status === "pending";
+              const isBusy = busyById[contract.id] === true;
 
               return (
                 <Card
@@ -151,7 +248,9 @@ export default function SignaturePage() {
                           <Badge className={`rounded-full ${meta.badgeClass}`}>{meta.label}</Badge>
                         </div>
                         <p className="text-sm text-muted-foreground">Parent signataire : {contract.parentName}</p>
-                        <p className="text-sm text-muted-foreground">Démarrage contrat : {formatDate(contract.startDate)} · {contract.scheduleLabel} · {contract.pricingLabel}</p>
+                        <p className="text-sm text-muted-foreground">
+                          Démarrage contrat : {formatDate(contract.startDate)} · {contract.scheduleLabel} · {contract.pricingLabel}
+                        </p>
                         <p className="text-xs text-muted-foreground">Référence dossier : {contract.id}</p>
                       </div>
 
@@ -162,25 +261,25 @@ export default function SignaturePage() {
                         <Button
                           className="rounded-xl"
                           variant={canSend ? "default" : "secondary"}
-                          disabled={!canSend}
+                          disabled={!canSend || isBusy}
                           onClick={() => {
-                            setSelectedId(contract.id);
-                            updateWorkflow(contract.id, {
-                              status: "pending",
-                              sentAt: new Date().toISOString(),
-                            });
+                            void persistSignatureStatus(contract.id, "pending");
                           }}
                         >
-                          Envoyer à signer
+                          {isBusy && canSend ? "Envoi..." : "Envoyer à signer"}
                         </Button>
                         <Button
                           variant="secondary"
                           className="rounded-xl"
-                          disabled={!canRemind}
+                          disabled={!canRemind || isBusy}
                           onClick={() => {
                             setSelectedId(contract.id);
                             updateWorkflow(contract.id, {
                               reminderCount: (workflow[contract.id]?.reminderCount ?? 0) + 1,
+                            });
+                            setFeedback({
+                              type: "success",
+                              message: "Relance enregistrée côté interface. Si tu veux une vraie traçabilité, il faudra aussi persister les relances en base.",
                             });
                           }}
                         >
@@ -189,13 +288,12 @@ export default function SignaturePage() {
                         <Button
                           variant="outline"
                           className="rounded-xl"
-                          disabled={!canMarkSigned}
+                          disabled={!canMarkSigned || isBusy}
                           onClick={() => {
-                            setSelectedId(contract.id);
-                            updateWorkflow(contract.id, { status: "signed" });
+                            void persistSignatureStatus(contract.id, "signed");
                           }}
                         >
-                          Marquer signé
+                          {isBusy && canMarkSigned ? "Enregistrement..." : "Marquer signé"}
                         </Button>
                       </div>
                     </div>
@@ -203,7 +301,9 @@ export default function SignaturePage() {
                     <div className="grid md:grid-cols-3 gap-3 text-sm">
                       <div className="rounded-2xl border bg-muted/20 p-3">
                         <p className="text-xs uppercase tracking-wide text-muted-foreground">Envoi</p>
-                        <p className="font-medium mt-1">{contract.workflow.sentAt ? `Envoyé le ${formatDate(contract.workflow.sentAt)}` : "Pas encore envoyé"}</p>
+                        <p className="font-medium mt-1">
+                          {contract.workflow.sentAt ? `Envoyé le ${formatDate(contract.workflow.sentAt)}` : "Pas encore envoyé"}
+                        </p>
                       </div>
                       <div className="rounded-2xl border bg-muted/20 p-3">
                         <p className="text-xs uppercase tracking-wide text-muted-foreground">Relances</p>
@@ -255,9 +355,12 @@ export default function SignaturePage() {
                     <div className="rounded-2xl border p-4">
                       <p className="font-medium">Étape actuelle</p>
                       <p className="text-muted-foreground mt-1">
-                        {selectedContract.workflow.status === "not_started" && "Le contrat existe, mais personne ne l’a encore envoyé. Le dossier peut dormir sans que personne ne s’en rende compte."}
-                        {selectedContract.workflow.status === "pending" && "Le parent a quelque chose à signer. Le prochain levier, ce n’est pas un nouveau champ, c’est la relance jusqu’à clôture."}
-                        {selectedContract.workflow.status === "signed" && "Le contrat est considéré sécurisé côté suivi. L’étape suivante doit naturellement nourrir les exports, la facturation et l’archivage documentaire."}
+                        {selectedContract.workflow.status === "not_started" &&
+                          "Le contrat existe, mais personne ne l’a encore envoyé. Le dossier peut dormir sans que personne ne s’en rende compte."}
+                        {selectedContract.workflow.status === "pending" &&
+                          "Le parent a quelque chose à signer. Le prochain levier, ce n’est pas un nouveau champ, c’est la relance jusqu’à clôture."}
+                        {selectedContract.workflow.status === "signed" &&
+                          "Le contrat est considéré sécurisé côté suivi. L’étape suivante doit naturellement nourrir les exports, la facturation et l’archivage documentaire."}
                       </p>
                     </div>
                     <div className="rounded-2xl border p-4">
