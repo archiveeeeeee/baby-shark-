@@ -14,11 +14,18 @@ type SignatureWorkflowState = {
   status: UiSignatureStatus;
   sentAt?: string;
   reminderCount: number;
-  signedAt?: string | null;
-  signedBy?: string | null;
 };
 
-function formatDate(value?: string) {
+type EnrichedContract = Contract & {
+  childName: string;
+  parentName: string;
+  parentEmail: string;
+  workflow: SignatureWorkflowState;
+};
+
+const DOCUMENT_BUCKET = "documents";
+
+function formatDate(value?: string | null) {
   if (!value) return "—";
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
@@ -26,6 +33,19 @@ function formatDate(value?: string) {
     day: "2-digit",
     month: "2-digit",
     year: "numeric",
+  });
+}
+
+function formatDateTime(value?: string | null) {
+  if (!value) return "—";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString("fr-BE", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
   });
 }
 
@@ -53,6 +73,78 @@ function getStatusMeta(status: UiSignatureStatus) {
   }
 }
 
+function sanitizePdfText(value: string) {
+  return value
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/\\/g, "\\\\")
+    .replace(/\(/g, "\\(")
+    .replace(/\)/g, "\\)")
+    .replace(/[^\x20-\x7E]/g, " ");
+}
+
+function buildSimplePdfBlob(lines: string[]) {
+  const encoder = new TextEncoder();
+  const textLines = lines.map((line) => sanitizePdfText(line)).filter(Boolean);
+  let currentY = 790;
+  const contentStream = [
+    "BT",
+    "/F1 12 Tf",
+    "50 790 Td",
+    ...textLines.flatMap((line, index) => {
+      const commands =
+        index === 0
+          ? [`(${line}) Tj`]
+          : [`0 -18 Td`, `(${line}) Tj`];
+      currentY -= 18;
+      return commands;
+    }),
+    "ET",
+  ].join("\n");
+
+  const objects = [
+    "1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n",
+    "2 0 obj\n<< /Type /Pages /Count 1 /Kids [3 0 R] >>\nendobj\n",
+    "3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>\nendobj\n",
+    `4 0 obj\n<< /Length ${encoder.encode(contentStream).length} >>\nstream\n${contentStream}\nendstream\nendobj\n`,
+    "5 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj\n",
+  ];
+
+  let pdf = "%PDF-1.4\n";
+  const offsets: number[] = [0];
+
+  for (const object of objects) {
+    offsets.push(encoder.encode(pdf).length);
+    pdf += object;
+  }
+
+  const xrefOffset = encoder.encode(pdf).length;
+  pdf += `xref\n0 ${objects.length + 1}\n`;
+  pdf += "0000000000 65535 f \n";
+  for (let index = 1; index <= objects.length; index += 1) {
+    pdf += `${String(offsets[index]).padStart(10, "0")} 00000 n \n`;
+  }
+  pdf += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF`;
+
+  return new Blob([pdf], { type: "application/pdf" });
+}
+
+async function getTenantId() {
+  if (!supabase) return null;
+  const { data, error } = await supabase.from("tenants").select("id").limit(1).maybeSingle();
+  if (error) throw error;
+  return data?.id ?? null;
+}
+
+function slugify(value: string) {
+  return value
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
 export default function SignaturePage() {
   const { state, refresh } = useAppData();
   const [workflow, setWorkflow] = useState<Record<string, SignatureWorkflowState>>({});
@@ -72,8 +164,6 @@ export default function SignaturePage() {
                 ? current[contract.id]?.sentAt ?? contract.startDate
                 : undefined,
             reminderCount: current[contract.id]?.reminderCount ?? 0,
-            signedAt: contract.signatureSignedAt ?? current[contract.id]?.signedAt ?? null,
-            signedBy: contract.signedBy ?? current[contract.id]?.signedBy ?? null,
           },
         ]),
       ),
@@ -91,7 +181,7 @@ export default function SignaturePage() {
     }
   }, [selectedId, state.contracts]);
 
-  const contracts = useMemo(
+  const contracts = useMemo<EnrichedContract[]>(
     () =>
       state.contracts.map((contract) => {
         const child = state.children.find((item) => item.id === contract.childId);
@@ -103,8 +193,6 @@ export default function SignaturePage() {
               ? contract.startDate
               : undefined,
           reminderCount: 0,
-          signedAt: contract.signatureSignedAt ?? null,
-          signedBy: contract.signedBy ?? null,
         };
 
         return {
@@ -128,79 +216,207 @@ export default function SignaturePage() {
     setWorkflow((current) => ({
       ...current,
       [contractId]: {
-        ...(current[contractId] ?? { status: "not_started", reminderCount: 0, signedAt: null, signedBy: null }),
+        ...(current[contractId] ?? { status: "not_started", reminderCount: 0 }),
         ...next,
       },
     }));
   };
 
-  const persistSignatureStatus = async (contractId: string, nextStatus: UiSignatureStatus, signerEmail?: string) => {
-    setSelectedId(contractId);
+  const buildSignedContractPdf = (contract: EnrichedContract, signedAtIso: string, signedBy: string) => {
+    const lines = [
+      `BabyShark - Contrat signe`,
+      `Structure : ${state.structure.name}`,
+      `Contrat : ${contract.id}`,
+      `Enfant : ${contract.childName}`,
+      `Parent signataire : ${contract.parentName}`,
+      `Contact signataire : ${signedBy}`,
+      `Date de debut : ${formatDate(contract.startDate)}`,
+      `Cadence : ${contract.scheduleLabel}`,
+      `Tarif : ${contract.pricingLabel}`,
+      `Statut : signe`,
+      `Signe le : ${formatDateTime(signedAtIso)}`,
+      `Adresse structure : ${state.structure.address}`,
+      `Email structure : ${state.structure.email}`,
+      `Telephone structure : ${state.structure.phone}`,
+      `Document genere automatiquement depuis le cockpit Signature.`,
+    ];
+
+    return buildSimplePdfBlob(lines);
+  };
+
+  const generateAndUploadSignedContractPdf = async (contract: EnrichedContract, signedAtIso: string, signedBy: string) => {
+    if (!supabase) {
+      throw new Error("Supabase non configuré");
+    }
+
+    const tenantId = await getTenantId();
+    const pdfBlob = buildSignedContractPdf(contract, signedAtIso, signedBy);
+    const safeChildName = slugify(contract.childName || "contrat");
+    const storagePath = `${tenantId ?? "tenant"}/contract/${contract.id}/contrat-signe-${safeChildName}.pdf`;
+
+    const { error: uploadError } = await supabase.storage.from(DOCUMENT_BUCKET).upload(storagePath, pdfBlob, {
+      upsert: true,
+      contentType: "application/pdf",
+      cacheControl: "3600",
+    });
+
+    if (uploadError) {
+      throw uploadError;
+    }
+
+    if (tenantId) {
+      const { error: docError } = await supabase.from("documents").insert({
+        tenant_id: tenantId,
+        entity_type: "contract",
+        entity_id: contract.id,
+        document_type: "contract",
+        title: `Contrat signé - ${contract.childName}`,
+        file_path: storagePath,
+        status: "active",
+        metadata: {
+          signed_at: signedAtIso,
+          signed_by: signedBy,
+          mime_type: "application/pdf",
+          generated_by: "signature-page",
+        },
+      });
+
+      if (docError) {
+        console.warn("Document row insert failed", docError);
+      }
+    }
+
+    return storagePath;
+  };
+
+  const openSignedDocument = async (contract: EnrichedContract) => {
+    setSelectedId(contract.id);
     setFeedback(null);
 
-    if (!isSupabaseConfigured || !supabase) {
-      const nowIso = new Date().toISOString();
-      updateWorkflow(contractId, {
-        status: nextStatus,
-        sentAt: nextStatus === "pending" || nextStatus === "signed" ? nowIso : undefined,
-        signedAt: nextStatus === "signed" ? nowIso : null,
-        signedBy: nextStatus === "signed" ? signerEmail ?? null : null,
-      });
+    const directPath = contract.signedDocumentUrl;
+    if (!directPath) {
       setFeedback({
-        type: "success",
-        message: "Mode local : le statut a été mis à jour dans l'application, sans persistance distante.",
+        type: "error",
+        message: "Aucun PDF signé n'est encore stocké pour ce contrat.",
       });
       return;
     }
 
-    setBusyById((current) => ({ ...current, [contractId]: true }));
+    if (!supabase) {
+      window.open(directPath, "_blank", "noopener,noreferrer");
+      return;
+    }
+
+    setBusyById((current) => ({ ...current, [contract.id]: true }));
+
+    try {
+      if (/^https?:\/\//i.test(directPath)) {
+        window.open(directPath, "_blank", "noopener,noreferrer");
+      } else {
+        const { data, error } = await supabase.storage.from(DOCUMENT_BUCKET).createSignedUrl(directPath, 60 * 30);
+        if (error) throw error;
+        if (!data?.signedUrl) throw new Error("URL signée introuvable");
+        window.open(data.signedUrl, "_blank", "noopener,noreferrer");
+      }
+    } catch (error) {
+      console.error("Open signed PDF failed", error);
+      setFeedback({
+        type: "error",
+        message: "Impossible d'ouvrir le PDF signé. Vérifie le bucket documents et le chemin stocké.",
+      });
+    } finally {
+      setBusyById((current) => ({ ...current, [contract.id]: false }));
+    }
+  };
+
+  const persistSignatureStatus = async (contract: EnrichedContract, nextStatus: UiSignatureStatus) => {
+    setSelectedId(contract.id);
+    setFeedback(null);
+
+    if (!isSupabaseConfigured || !supabase) {
+      const localSignedAt = nextStatus === "signed" ? new Date().toISOString() : undefined;
+      const localSignedBy = nextStatus === "signed" ? contract.parentEmail : undefined;
+
+      updateWorkflow(contract.id, {
+        status: nextStatus,
+        sentAt: nextStatus === "pending" || nextStatus === "signed" ? new Date().toISOString() : undefined,
+      });
+      setFeedback({
+        type: "success",
+        message:
+          nextStatus === "signed"
+            ? `Mode local : statut signé simulé. Aucun PDF distant n'a été archivé pour ${localSignedBy} le ${formatDateTime(localSignedAt)}.`
+            : "Mode local : le statut a été mis à jour dans l'application, sans persistance distante.",
+      });
+      return;
+    }
+
+    setBusyById((current) => ({ ...current, [contract.id]: true }));
 
     try {
       const nowIso = new Date().toISOString();
-      const payload =
-        nextStatus === "signed"
-          ? {
-              signature_status: "signed",
-              status: "active",
-              signature_signed_at: nowIso,
-              signed_by: signerEmail ?? null,
-            }
-          : {
-              signature_status: "pending",
-              status: "ready_for_signature",
-            };
 
-      const { error } = await supabase.from("contracts").update(payload).eq("id", contractId);
+      if (nextStatus === "signed") {
+        const signedBy = contract.parentEmail || contract.parentName || "signataire inconnu";
+        const signedDocumentUrl =
+          contract.signedDocumentUrl || (await generateAndUploadSignedContractPdf(contract, nowIso, signedBy));
 
-      if (error) {
-        throw error;
+        const { error } = await supabase
+          .from("contracts")
+          .update({
+            signature_status: "signed",
+            status: "active",
+            signature_signed_at: nowIso,
+            signed_by: signedBy,
+            signed_document_url: signedDocumentUrl,
+          })
+          .eq("id", contract.id);
+
+        if (error) throw error;
+
+        updateWorkflow(contract.id, {
+          status: "signed",
+          sentAt: contract.workflow.sentAt ?? nowIso,
+        });
+
+        await refresh();
+
+        setFeedback({
+          type: "success",
+          message: "Le contrat a été signé, horodaté, attribué à son signataire et archivé en PDF.",
+        });
+        return;
       }
 
-      const nowIso = new Date().toISOString();
-      updateWorkflow(contractId, {
-        status: nextStatus,
-        sentAt: nextStatus === "pending" || nextStatus === "signed" ? nowIso : undefined,
-        signedAt: nextStatus === "signed" ? nowIso : null,
-        signedBy: nextStatus === "signed" ? signerEmail ?? null : null,
+      const { error } = await supabase
+        .from("contracts")
+        .update({
+          signature_status: "pending",
+          status: "ready_for_signature",
+        })
+        .eq("id", contract.id);
+
+      if (error) throw error;
+
+      updateWorkflow(contract.id, {
+        status: "pending",
+        sentAt: nowIso,
       });
 
       await refresh();
 
       setFeedback({
         type: "success",
-        message:
-          nextStatus === "signed"
-            ? "Le contrat a bien été marqué signé dans Supabase. Après refresh, il reste signé."
-            : "Le contrat a bien été marqué comme envoyé à signer dans Supabase.",
+        message: "Le contrat a bien été marqué comme envoyé à signer dans Supabase.",
       });
     } catch (error) {
       console.error("Signature workflow update failed", error);
       setFeedback({
         type: "error",
-        message: "La mise à jour Supabase a échoué. Le statut n'a pas été persisté.",
+        message: "La mise à jour Signature a échoué. Vérifie la colonne signed_document_url et le bucket documents.",
       });
     } finally {
-      setBusyById((current) => ({ ...current, [contractId]: false }));
+      setBusyById((current) => ({ ...current, [contract.id]: false }));
     }
   };
 
@@ -209,7 +425,7 @@ export default function SignaturePage() {
       <div className="p-6 max-w-7xl mx-auto space-y-6">
         <SectionTitle
           title="Signature"
-          subtitle="Ici, on pilote réellement l’envoi, la relance et le suivi des contrats à signer. Le branchement prestataire viendra plus tard, mais l’écran doit déjà servir au métier."
+          subtitle="Ici, on pilote réellement l’envoi, la relance, la signature et l’archivage PDF des contrats."
         />
 
         {feedback ? (
@@ -248,6 +464,7 @@ export default function SignaturePage() {
               const canSend = contract.workflow.status === "not_started";
               const canRemind = contract.workflow.status === "pending";
               const canMarkSigned = contract.workflow.status === "pending";
+              const canViewSignedPdf = contract.workflow.status === "signed" && Boolean(contract.signedDocumentUrl);
               const isBusy = busyById[contract.id] === true;
 
               return (
@@ -274,11 +491,21 @@ export default function SignaturePage() {
                           Voir le dossier
                         </Button>
                         <Button
+                          variant="outline"
+                          className="rounded-xl"
+                          disabled={!canViewSignedPdf || isBusy}
+                          onClick={() => {
+                            void openSignedDocument(contract);
+                          }}
+                        >
+                          Voir contrat signé
+                        </Button>
+                        <Button
                           className="rounded-xl"
                           variant={canSend ? "default" : "secondary"}
                           disabled={!canSend || isBusy}
                           onClick={() => {
-                            void persistSignatureStatus(contract.id, "pending", contract.parentEmail);
+                            void persistSignatureStatus(contract, "pending");
                           }}
                         >
                           {isBusy && canSend ? "Envoi..." : "Envoyer à signer"}
@@ -305,15 +532,15 @@ export default function SignaturePage() {
                           className="rounded-xl"
                           disabled={!canMarkSigned || isBusy}
                           onClick={() => {
-                            void persistSignatureStatus(contract.id, "signed", contract.parentEmail);
+                            void persistSignatureStatus(contract, "signed");
                           }}
                         >
-                          {isBusy && canMarkSigned ? "Enregistrement..." : "Marquer signé"}
+                          {isBusy && canMarkSigned ? "Signature + PDF..." : "Marquer signé"}
                         </Button>
                       </div>
                     </div>
 
-                    <div className="grid md:grid-cols-3 gap-3 text-sm">
+                    <div className="grid md:grid-cols-5 gap-3 text-sm">
                       <div className="rounded-2xl border bg-muted/20 p-3">
                         <p className="text-xs uppercase tracking-wide text-muted-foreground">Envoi</p>
                         <p className="font-medium mt-1">
@@ -325,20 +552,22 @@ export default function SignaturePage() {
                         <p className="font-medium mt-1">{contract.workflow.reminderCount} relance(s)</p>
                       </div>
                       <div className="rounded-2xl border bg-muted/20 p-3">
+                        <p className="text-xs uppercase tracking-wide text-muted-foreground">Signé le</p>
+                        <p className="font-medium mt-1">{formatDateTime(contract.signatureSignedAt)}</p>
+                      </div>
+                      <div className="rounded-2xl border bg-muted/20 p-3">
+                        <p className="text-xs uppercase tracking-wide text-muted-foreground">Signé par</p>
+                        <p className="font-medium mt-1 break-all">{contract.signedBy || "—"}</p>
+                      </div>
+                      <div className="rounded-2xl border bg-muted/20 p-3">
                         <p className="text-xs uppercase tracking-wide text-muted-foreground">Action attendue</p>
                         <p className="font-medium mt-1">
                           {contract.workflow.status === "signed"
-                            ? "Dossier sécurisé"
+                            ? "Dossier sécurisé + PDF archivé"
                             : contract.workflow.status === "pending"
                               ? "Signature parent attendue"
                               : "Envoi initial à déclencher"}
                         </p>
-                        {contract.workflow.status === "signed" ? (
-                          <p className="mt-2 text-xs text-muted-foreground">
-                            Signé le {formatDate(contract.workflow.signedAt ?? undefined)}
-                            {contract.workflow.signedBy ? ` · par ${contract.workflow.signedBy}` : ""}
-                          </p>
-                        ) : null}
                       </div>
                     </div>
                   </CardContent>
@@ -366,20 +595,15 @@ export default function SignaturePage() {
                     <p className="text-sm text-muted-foreground">Début prévu : {formatDate(selectedContract.startDate)}</p>
                     <p className="text-sm text-muted-foreground">Cadence : {selectedContract.scheduleLabel}</p>
                     <p className="text-sm text-muted-foreground">Tarif : {selectedContract.pricingLabel}</p>
-                    {selectedContract.workflow.status === "signed" ? (
-                      <>
-                        <p className="text-sm text-muted-foreground">
-                          Signé le : {formatDate(selectedContract.workflow.signedAt ?? undefined)}
-                        </p>
-                        <p className="text-sm text-muted-foreground">
-                          Signé par : {selectedContract.workflow.signedBy ?? "Non renseigné"}
-                        </p>
-                      </>
-                    ) : null}
+                    <p className="text-sm text-muted-foreground">Signé le : {formatDateTime(selectedContract.signatureSignedAt)}</p>
+                    <p className="text-sm text-muted-foreground break-all">Signé par : {selectedContract.signedBy || "—"}</p>
+                    <p className="text-sm text-muted-foreground break-all">
+                      PDF archivé : {selectedContract.signedDocumentUrl ? "oui" : "non"}
+                    </p>
                   </div>
 
                   <div className="rounded-2xl border border-amber-200 bg-amber-50/70 p-4 text-sm text-amber-900 leading-relaxed">
-                    Le vrai risque ici, ce n’est pas l’absence d’un prestataire e-sign tout de suite. C’est de perdre le suivi humain : qui doit signer, où le contrat en est, et combien de fois tu as relancé.
+                    Le faux suivi est terminé. Ici, un contrat signé doit aussi produire une preuve consultable. Sans PDF archivé, ton statut "signé" reste une promesse.
                   </div>
 
                   <div className="space-y-3 text-sm">
@@ -391,7 +615,7 @@ export default function SignaturePage() {
                         {selectedContract.workflow.status === "pending" &&
                           "Le parent a quelque chose à signer. Le prochain levier, ce n’est pas un nouveau champ, c’est la relance jusqu’à clôture."}
                         {selectedContract.workflow.status === "signed" &&
-                          "Le contrat est considéré sécurisé côté suivi. L’étape suivante doit naturellement nourrir les exports, la facturation et l’archivage documentaire."}
+                          "Le contrat est sécurisé au minimum : statut, horodatage, signataire et PDF archivé. Le prochain levier, c’est l’export propre et la preuve exploitable."}
                       </p>
                     </div>
                     <div className="rounded-2xl border p-4">
@@ -399,7 +623,7 @@ export default function SignaturePage() {
                       <ul className="mt-2 space-y-2 text-muted-foreground list-disc pl-4">
                         <li>le stock de contrats jamais envoyés,</li>
                         <li>les contrats en attente qui stagnent,</li>
-                        <li>la preuve qu’un dossier est bien signé avant d’avancer plus loin.</li>
+                        <li>la preuve consultable qu’un dossier est bien signé.</li>
                       </ul>
                     </div>
                   </div>
