@@ -146,6 +146,9 @@ export async function fetchRemoteState(): Promise<AppState | null> {
     pricingLabel: row.pricing || "",
     status: row.status,
     signatureStatus: row.signature_status,
+    signatureSignedAt: row.signature_signed_at || null,
+    signedBy: row.signed_by || null,
+    signedDocumentUrl: row.signed_document_url || row.document_url || null,
   }));
 
   const children: Child[] = ensureData(childrenRes.data).map((row: any) => ({
@@ -419,6 +422,9 @@ export async function bootstrapRemoteFromSeed() {
         weekly_schedule: contract.scheduleLabel,
         pricing: contract.pricingLabel,
         signature_status: contract.signatureStatus,
+        signature_signed_at: contract.signatureSignedAt || null,
+        signed_by: contract.signedBy || null,
+        signed_document_url: contract.signedDocumentUrl || null,
         document_url: null,
       })
       .select()
@@ -613,6 +619,9 @@ export async function insertContract(
     weekly_schedule: payload.scheduleLabel,
     pricing: payload.pricingLabel,
     signature_status: "pending",
+    signature_signed_at: null,
+    signed_by: null,
+    signed_document_url: null,
     document_url: null,
   });
   if (error) throw error;
