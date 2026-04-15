@@ -81,6 +81,8 @@ export interface Contract {
   status: "draft" | "ready_for_signature" | "active" | "ended";
   pricingLabel: string;
   signatureStatus: "not_started" | "pending" | "signed";
+  signatureSignedAt?: string | null;
+  signedBy?: string | null;
 }
 
 export interface Invoice {
