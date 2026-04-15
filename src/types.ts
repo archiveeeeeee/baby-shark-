@@ -83,6 +83,7 @@ export interface Contract {
   signatureStatus: "not_started" | "pending" | "signed";
   signatureSignedAt?: string | null;
   signedBy?: string | null;
+  signedDocumentUrl?: string | null;
 }
 
 export interface Invoice {
