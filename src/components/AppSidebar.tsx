@@ -2,7 +2,7 @@ import { Link, useLocation } from "react-router-dom";
 import {
   LayoutDashboard, Baby, Users, FileText, Receipt, CalendarDays,
   UserCog, BarChart3, MessageSquare, FolderOpen, Settings, Tablet,
-  Shield, Globe, PenTool, Download, Clock, Building2, Sparkles, PanelTop,
+  Shield, Globe, PenTool, Download, Clock, Building2, Sparkles,
 } from "lucide-react";
 import {
   Sidebar, SidebarContent, SidebarGroup, SidebarGroupContent,
@@ -36,7 +36,6 @@ const settingsNav = [
   { title: "Site vitrine", url: "/vitrine", icon: Globe },
   { title: "Signature", url: "/signature", icon: PenTool },
   { title: "Exports", url: "/exports", icon: Download },
-  { title: "Superadmin", url: "/superadmin", icon: PanelTop },
 ];
 
 function NavGroup({ label, items }: { label: string; items: typeof mainNav }) {
